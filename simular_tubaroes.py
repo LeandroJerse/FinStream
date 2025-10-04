@@ -35,18 +35,18 @@ INTERVALO_PING_MINUTOS = 5
 DATA_INICIO = "2024-01-01 00:00:00"
 
 # Parâmetros de movimento por comportamento (graus)
-PASSO_FORRAGEIO_BASE = 0.003  # ~200m em 5min
-PASSO_BUSCA_BASE = 0.008  # ~500m em 5min
-PASSO_TRANSITO_BASE = 0.02  # ~1.5km em 5min
+PASSO_FORRAGEIO_BASE = 0.003  # ~333m em 5min = ~4 km/h (forrageio lento)
+PASSO_BUSCA_BASE = 0.008  # ~888m em 5min = ~10.7 km/h (busca ativa)
+PASSO_TRANSITO_BASE = 0.012  # ~1.3km em 5min = ~16 km/h (transito rapido)
 
 # Parâmetros comportamentais
 PROB_CONTINUAR_COMPORTAMENTO = 0.4  # Reduzido para mais variabilidade
 PROB_MUDAR_COMPORTAMENTO = 0.6
 HISTORICO_POSICOES = 10  # Número de posições para calcular velocidade
-FADIGA_NUTRICIONAL_BASE = 0.1  # Fadiga nutricional inicial
+NIVEL_FOME_INICIAL = 0.1  # Nível de fome inicial (0=saciado, 1=faminto)
 
 # Arquivos
-DADOS_AMBIENTAIS = "data/dados_treinamento_ia.csv"
+DADOS_AMBIENTAIS = "data/dados_unificados_final.csv"
 OUTPUT_FILE = "data/tubaroes_sinteticos.csv"
 ANALISE_DIR = "data/analise_diaria"
 
@@ -65,7 +65,13 @@ def carregar_dados_ambientais():
     print("Carregando dados ambientais reais...")
 
     # Carregar apenas colunas necessárias para economizar memória
-    df = pd.read_csv(DADOS_AMBIENTAIS, usecols=["lat", "lon", "ssha", "chlor_a"])
+    # Usar ssha_ambiente e chlor_a_ambiente do arquivo unificado
+    df = pd.read_csv(
+        DADOS_AMBIENTAIS, usecols=["lat", "lon", "ssha_ambiente", "chlor_a_ambiente"]
+    )
+
+    # Renomear colunas para manter compatibilidade
+    df = df.rename(columns={"ssha_ambiente": "ssha", "chlor_a_ambiente": "chlor_a"})
 
     # Converter para numérico e remover NaN
     df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
@@ -99,7 +105,7 @@ def calcular_probabilidade_forrageio_avancada(
     tempo_dia,
     comportamento_anterior,
     historico_posicoes,
-    fadiga_nutricional=0.0,
+    nivel_fome=0.0,
 ):
     """
     Calcula probabilidade de forrageio usando modelo ecológico avançado.
@@ -118,7 +124,7 @@ def calcular_probabilidade_forrageio_avancada(
         tempo_dia: hora do dia (0-24)
         comportamento_anterior: comportamento no ping anterior
         historico_posicoes: últimas N posições para calcular velocidade
-        fadiga_nutricional: fator de fome (0-1)
+        nivel_fome: nível de fome do tubarão (0=saciado, 1=faminto)
 
     Returns:
         tuple: (p_forrageio, velocidade_preferida, direcao_preferida)
@@ -148,16 +154,7 @@ def calcular_probabilidade_forrageio_avancada(
         fator_circadiano = 1.1  # Atividade moderada (noite)
 
     # 4. COMPORTAMENTO DE FORRAGEIO ÓTIMO
-    # Probabilidade baseada em múltiplos fatores
-
-    # Fator produtividade (clorofila alta = mais forrageio)
-    fator_produtividade = sigmoid(2.0 * chlor_norm - 0.5)
-
-    # Fator convergência (SSHA positiva = convergência = alimento)
-    fator_convergencia = sigmoid(1.5 * ssha_norm - 0.3)
-
-    # Fator fronteira (gradientes = hotspots de vida)
-    fator_fronteira = sigmoid(1.2 * gradiente_ssha - 0.2)
+    # (Fatores calculados diretamente no score final)
 
     # 5. INÉRCIA COMPORTAMENTAL
     if comportamento_anterior == "forrageando":
@@ -167,37 +164,43 @@ def calcular_probabilidade_forrageio_avancada(
     else:  # busca
         inercia = 0.0
 
-    # 6. FADIGA NUTRICIONAL (fome)
-    # Tubarões famintos têm maior probabilidade de forragear
-    fator_fome = sigmoid(2.0 * fadiga_nutricional - 0.5)
+    # 6. NÍVEL DE FOME
+    # (Usado diretamente no score final)
 
     # 7. FATOR TEMPORAL (varia ao longo do dia)
     # Simula mudanças nas condições oceânicas
     ciclo_diario = np.sin(2 * np.pi * tempo_dia / 24) * 0.2
 
-    # 8. CÁLCULO FINAL DA PROBABILIDADE (mais variável)
-    p_forrageio = sigmoid(
-        0.4 * fator_produtividade  # Muito reduzido
-        + 0.3 * fator_convergencia  # Muito reduzido
-        + 0.2 * fator_fronteira  # Muito reduzido
-        + 0.2 * fator_circadiano  # Muito reduzido
-        + 0.6 * fator_fome  # Aumentado (fome é o principal fator)
-        + 0.1 * inercia  # Reduzido
-        + ciclo_diario  # Variação temporal
-        + np.random.normal(0, 0.3)  # Muito mais ruído
+    # 8. CÁLCULO FINAL DA PROBABILIDADE (rebalanceado)
+    # Usar valores brutos (0-1) em vez de sigmoid para evitar compressão
+    # Pesos somam 1.0 para manter probabilidades realistas
+    score_forrageio = (
+        0.25 * chlor_norm  # Produtividade (valor bruto 0-1)
+        + 0.20 * ssha_norm  # Convergência (valor bruto 0-1)
+        + 0.15 * gradiente_ssha  # Fronteiras (valor bruto 0-1)
+        + 0.15 * (fator_circadiano - 0.8) / 0.5  # Normalizado para 0-1
+        + 0.20 * nivel_fome  # Fome (valor bruto 0-1)
+        + 0.05 * (inercia + 0.3) / 0.6  # Normalizado para 0-1
+        + ciclo_diario  # Variação temporal (-0.2 a +0.2)
+        + np.random.normal(0, 0.15)  # Ruído reduzido
     )
 
-    # 9. VELOCIDADE PREFERIDA baseada no comportamento (limiares mais equilibrados)
-    if p_forrageio > 0.55:  # Ainda mais reduzido
-        # Forrageio: movimentos lentos e erráticos
+    # Aplicar sigmoid apenas uma vez no score final
+    # Ajustar para ter média ~0.5 em vez de ~0.7
+    p_forrageio = sigmoid(2.0 * (score_forrageio - 0.5))
+
+    # 9. VELOCIDADE PREFERIDA baseada no comportamento (biologicamente ajustado)
+    # Limiares ajustados para refletir comportamento realista de tubarões
+    if p_forrageio > 0.5:  # Forrageio: mais comum (35-45% do tempo)
+        # Forrageio: movimentos lentos e erráticos em áreas produtivas
         velocidade_base = PASSO_FORRAGEIO_BASE
         variacao_velocidade = 0.5
-    elif p_forrageio < 0.45:  # Ainda mais aumentado
-        # Trânsito: movimentos rápidos e direcionais
+    elif p_forrageio < 0.35:  # Trânsito: menos comum (20-30% do tempo)
+        # Trânsito: movimentos rápidos e direcionais entre áreas
         velocidade_base = PASSO_TRANSITO_BASE
         variacao_velocidade = 0.2
-    else:
-        # Busca: movimentos intermediários
+    else:  # Busca: intermediário (30-40% do tempo, entre 0.35-0.5)
+        # Busca: movimentos intermediários procurando sinais de presas
         velocidade_base = PASSO_BUSCA_BASE
         variacao_velocidade = 0.4
 
@@ -248,12 +251,13 @@ def determinar_comportamento_avancado(
         else:
             return "busca"
 
-    # Comportamento baseado na probabilidade de forrageio (limiares mais equilibrados)
-    if p_forrageio > 0.55:  # Ainda mais reduzido
+    # Comportamento baseado na probabilidade de forrageio (biologicamente ajustado)
+    # Limiares para refletir: 35-45% forrageio, 30-40% busca, 20-30% trânsito
+    if p_forrageio > 0.5:  # Forrageio mais comum
         return "forrageando"
-    elif p_forrageio < 0.45:  # Ainda mais aumentado
+    elif p_forrageio < 0.35:  # Trânsito menos comum
         return "transitando"
-    else:
+    else:  # Busca intermediária (0.35-0.5)
         return "busca"
 
 
@@ -394,7 +398,7 @@ def simular_tubarao_avancado(id_tubarao, ponto_inicial, df_ambiental, kdtree, co
     lon_atual = ponto_inicial["lon"]
     tempo_atual = datetime.strptime(DATA_INICIO, "%Y-%m-%d %H:%M:%S")
     comportamento = "busca"  # Comportamento inicial
-    fadiga_nutricional = FADIGA_NUTRICIONAL_BASE
+    nivel_fome = NIVEL_FOME_INICIAL
     tempo_sem_alimento = 0
     historico_posicoes = []
 
@@ -417,7 +421,7 @@ def simular_tubarao_avancado(id_tubarao, ponto_inicial, df_ambiental, kdtree, co
                 tempo_dia,
                 comportamento,
                 historico_posicoes,
-                fadiga_nutricional,
+                nivel_fome,
             )
         )
 
@@ -426,17 +430,17 @@ def simular_tubarao_avancado(id_tubarao, ponto_inicial, df_ambiental, kdtree, co
             p_forrageio, comportamento, tempo_sem_alimento
         )
 
-        # Atualizar fadiga nutricional
+        # Atualizar nível de fome
         if comportamento == "forrageando":
             # Chance de encontrar alimento
             if np.random.random() < p_forrageio * 0.3:
-                fadiga_nutricional = max(0, fadiga_nutricional - 0.2)
+                nivel_fome = max(0, nivel_fome - 0.2)
                 tempo_sem_alimento = 0
             else:
-                fadiga_nutricional = min(1, fadiga_nutricional + 0.01)
+                nivel_fome = min(1, nivel_fome + 0.01)
                 tempo_sem_alimento += 1
         else:
-            fadiga_nutricional = min(1, fadiga_nutricional + 0.005)
+            nivel_fome = min(1, nivel_fome + 0.005)
             tempo_sem_alimento += 1
 
         # Registrar posição atual
@@ -449,8 +453,10 @@ def simular_tubarao_avancado(id_tubarao, ponto_inicial, df_ambiental, kdtree, co
             "chlor_a": round(chlor_a, 6),
             "comportamento": comportamento,
             "p_forrageio": round(p_forrageio, 4),
-            "velocidade": round(velocidade_preferida * 111000, 2),  # m/min
-            "fadiga_nutricional": round(fadiga_nutricional, 3),
+            "velocidade": round(
+                velocidade_preferida * 111000 / INTERVALO_PING_MINUTOS, 2
+            ),  # m/min
+            "nivel_fome": round(nivel_fome, 3),
         }
         registros.append(registro)
 
@@ -501,7 +507,7 @@ def main():
     print(f"Usando {len(df_ambiental):,} pontos SWOT+MODIS como base " f"ambiental")
 
     # Analisar dados ambientais (básico para referência)
-    analise_ambiental = analisar_dados_ambientais_basico(df_ambiental)
+    _ = analisar_dados_ambientais_basico(df_ambiental)
 
     # Selecionar pontos iniciais aleatórios
     np.random.seed(42)  # Para reprodutibilidade
@@ -518,7 +524,7 @@ def main():
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         f.write(
             "id_tubarao,tempo,lat,lon,ssha,chlor_a,comportamento,"
-            "p_forrageio,velocidade,fadiga_nutricional\n"
+            "p_forrageio,velocidade,nivel_fome\n"
         )
 
     # Simular cada tubarão
@@ -542,7 +548,7 @@ def main():
                     f"{registro['comportamento']},"
                     f"{registro['p_forrageio']},"
                     f"{registro['velocidade']},"
-                    f"{registro['fadiga_nutricional']}\n"
+                    f"{registro['nivel_fome']}\n"
                 )
 
         # Coletar dados para estatísticas
@@ -586,21 +592,21 @@ def main():
 
     # Estatísticas de velocidade
     velocidades = df_final["velocidade"]
-    print(f"\nEstatísticas de velocidade:")
-    print(f"  Velocidade média: {velocidades.mean():.1f} m/min")
-    print(f"  Velocidade máxima: {velocidades.max():.1f} m/min")
-    print(f"  Velocidade mínima: {velocidades.min():.1f} m/min")
+    print("\nEstatisticas de velocidade:")
+    print(f"  Velocidade media: {velocidades.mean():.1f} m/min")
+    print(f"  Velocidade maxima: {velocidades.max():.1f} m/min")
+    print(f"  Velocidade minima: {velocidades.min():.1f} m/min")
 
-    # Estatísticas de fadiga nutricional
-    fadiga = df_final["fadiga_nutricional"]
-    print(f"\nEstatísticas de fadiga nutricional:")
-    print(f"  Fadiga média: {fadiga.mean():.3f}")
-    print(f"  Fadiga máxima: {fadiga.max():.3f}")
+    # Estatísticas de nível de fome
+    fome = df_final["nivel_fome"]
+    print("\nEstatisticas de nivel de fome:")
+    print(f"  Fome media: {fome.mean():.3f}")
+    print(f"  Fome maxima: {fome.max():.3f}")
 
     # Estatísticas gerais
-    print(f"\nEstatísticas gerais:")
+    print("\nEstatisticas gerais:")
     print(f"  Pings totais simulados: {len(todos_registros):,}")
-    print("  Período simulado: 3 dias por tubarão")
+    print("  Periodo simulado: 3 dias por tubarao")
     print(f"  Intervalo entre pings: {INTERVALO_PING_MINUTOS} minutos")
 
     # Verificar arquivo
@@ -608,8 +614,8 @@ def main():
     print(f"\nArquivo salvo: {OUTPUT_FILE}")
     print(f"Tamanho: {tamanho_mb:.1f} MB")
 
-    print("\nSUCESSO: Simulação avançada concluída com sucesso!")
-    print("Dados prontos para treinamento de IA com modelo ecológico realista.")
+    print("\nSUCESSO: Simulacao avancada concluida com sucesso!")
+    print("Dados prontos para treinamento de IA com modelo ecologico realista.")
 
 
 if __name__ == "__main__":
