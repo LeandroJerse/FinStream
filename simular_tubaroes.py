@@ -48,6 +48,7 @@ FADIGA_NUTRICIONAL_BASE = 0.1  # Fadiga nutricional inicial
 # Arquivos
 DADOS_AMBIENTAIS = "data/dados_treinamento_ia.csv"
 OUTPUT_FILE = "data/tubaroes_sinteticos.csv"
+ANALISE_DIR = "data/analise_diaria"
 
 # =============================================================================
 # FUNÇÕES AUXILIARES AVANÇADAS
@@ -301,6 +302,58 @@ def calcular_movimento_avancado(
     return nova_lat, nova_lon
 
 
+def analisar_dados_ambientais_basico(df_ambiental):
+    """
+    Análise básica dos dados ambientais para referência da IA.
+
+    Args:
+        df_ambiental: DataFrame com dados ambientais
+
+    Returns:
+        dict: Estatísticas básicas
+    """
+    print("\nAnalisando dados ambientais para referência da IA...")
+
+    # Criar diretório de análise
+    os.makedirs(ANALISE_DIR, exist_ok=True)
+
+    # Estatísticas gerais (apenas para referência)
+    stats_gerais = {
+        "total_pontos": len(df_ambiental),
+        "ssha_media": df_ambiental["ssha"].mean(),
+        "ssha_std": df_ambiental["ssha"].std(),
+        "chlor_media": df_ambiental["chlor_a"].mean(),
+        "chlor_std": df_ambiental["chlor_a"].std(),
+        "correlacao_ssha_chlor": df_ambiental["ssha"].corr(df_ambiental["chlor_a"]),
+    }
+
+    print(f"Dados ambientais carregados: {stats_gerais['total_pontos']:,} pontos")
+    print(f"SSHA médio: {stats_gerais['ssha_media']:.3f}")
+    print(f"Chlor_a médio: {stats_gerais['chlor_media']:.4f}")
+
+    return {"stats_gerais": stats_gerais}
+
+
+def salvar_dados_tubaroes_por_dia(registros_dia, data):
+    """
+    Salva apenas os dados CSV dos tubarões por dia (para treinamento da IA).
+
+    Args:
+        registros_dia: Lista de registros do dia
+        data: Data do arquivo
+    """
+    if not registros_dia:
+        return
+
+    df_dia = pd.DataFrame(registros_dia)
+
+    # Salvar apenas dados CSV dos tubarões
+    arquivo_csv = f"{ANALISE_DIR}/tubaroes_{data.replace('-', '')}.csv"
+    df_dia.to_csv(arquivo_csv, index=False)
+
+    print(f"Dados tubarões salvos: {arquivo_csv}")
+
+
 def buscar_dados_ambientais_proximos(lat, lon, kdtree, df_ambiental, coords):
     """
     Busca os dados ambientais mais próximos para uma posição.
@@ -447,6 +500,9 @@ def main():
     df_ambiental, kdtree, coords = carregar_dados_ambientais()
     print(f"Usando {len(df_ambiental):,} pontos SWOT+MODIS como base " f"ambiental")
 
+    # Analisar dados ambientais (básico para referência)
+    analise_ambiental = analisar_dados_ambientais_basico(df_ambiental)
+
     # Selecionar pontos iniciais aleatórios
     np.random.seed(42)  # Para reprodutibilidade
     indices_iniciais = np.random.choice(len(df_ambiental), N_TUBAROES, replace=False)
@@ -468,6 +524,7 @@ def main():
     # Simular cada tubarão
     todos_registros = []
     correlacoes = []
+    registros_por_dia = {}  # Para análise diária
 
     print("\nIniciando simulação avançada...")
     for i in tqdm(range(N_TUBAROES), desc="Simulando tubarões"):
@@ -491,12 +548,24 @@ def main():
         # Coletar dados para estatísticas
         todos_registros.extend(registros)
 
+        # Organizar por dia para análise
+        for registro in registros:
+            data = registro["tempo"][:10]  # YYYY-MM-DD
+            if data not in registros_por_dia:
+                registros_por_dia[data] = []
+            registros_por_dia[data].append(registro)
+
         # Calcular correlação local (últimos 100 pings)
         if len(registros) >= 100:
             df_local = pd.DataFrame(registros[-100:])
             corr = df_local["ssha"].corr(df_local["chlor_a"])
             if not np.isnan(corr):
                 correlacoes.append(corr)
+
+    # Salvar dados dos tubarões por dia
+    print("\nSalvando dados dos tubarões por dia...")
+    for data, registros_dia in registros_por_dia.items():
+        salvar_dados_tubaroes_por_dia(registros_dia, data)
 
     # Estatísticas finais
     print("\n" + "=" * 60)
