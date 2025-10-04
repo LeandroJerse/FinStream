@@ -1,49 +1,186 @@
 #!/usr/bin/env python3
 """
-Análise Ultra-Eficiente - SWOT x MODIS
+Análise Ultra-Eficiente e Escalável - SWOT x MODIS
 NASA Ocean Data Coherence Checker - FinStream Project
-Algoritmo otimizado para processar TODOS os dados reais
+Processamento automático de múltiplos arquivos com caching inteligente
 """
 
+import glob
 import os
-from datetime import datetime
+import pickle
+import warnings
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
+import joblib
 import numpy as np
 import pandas as pd
 import xarray as xr
 from scipy.spatial import cKDTree
+from tqdm import tqdm
+
+# Configurações globais
+TOLERANCE_DEGREES = 1.0
+TIME_TOL_HOURS = 12
+BATCH_SIZE = 10000
+N_JOBS = -1  # Usar todos os cores disponíveis
+CACHE_DIR = "tmp_cache"
+RESULTS_DIR = "results"
+DATA_DIR = "data"
+
+# Criar diretórios necessários
+for dir_name in [
+    CACHE_DIR,
+    RESULTS_DIR,
+    DATA_DIR,
+    f"{DATA_DIR}/swot",
+    f"{DATA_DIR}/modis",
+]:
+    os.makedirs(dir_name, exist_ok=True)
+
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 
-def ler_modis_l3b(caminho_arquivo):
-    """Lê dados MODIS L3b corretamente"""
+def discover_files(folder: str, pattern: str = "*.nc") -> List[str]:
+    """
+    Descobre todos os arquivos NetCDF em uma pasta
+
+    Args:
+        folder: Caminho da pasta
+        pattern: Padrão de busca (padrão: *.nc)
+
+    Returns:
+        Lista de caminhos de arquivos encontrados
+    """
+    if not os.path.exists(folder):
+        print(f"AVISO: Pasta {folder} não encontrada. Criando...")
+        os.makedirs(folder, exist_ok=True)
+        return []
+
+    files = glob.glob(os.path.join(folder, pattern))
+    print(f"Encontrados {len(files)} arquivos {pattern} em {folder}")
+    return sorted(files)
+
+
+def extract_metadata(ncfile: str) -> Dict:
+    """
+    Extrai metadados de um arquivo NetCDF
+
+    Args:
+        ncfile: Caminho do arquivo NetCDF
+
+    Returns:
+        Dicionário com metadados do arquivo
+    """
     try:
-        ds = xr.open_dataset(caminho_arquivo, group="level-3_binned_data")
-        return ds
+        ds = xr.open_dataset(ncfile)
+
+        metadata = {
+            "file_path": ncfile,
+            "file_name": os.path.basename(ncfile),
+            "file_size_mb": os.path.getsize(ncfile) / (1024 * 1024),
+            "variables": list(ds.data_vars.keys()),
+            "dimensions": dict(ds.dims),
+            "created": datetime.now().isoformat(),
+        }
+
+        # Extrair informações específicas baseadas no tipo de arquivo
+        if "ssha_karin" in ds.data_vars:
+            # Arquivo SWOT
+            metadata.update(
+                {
+                    "type": "SWOT",
+                    "lat_min": float(ds.latitude.min()),
+                    "lat_max": float(ds.latitude.max()),
+                    "lon_min": float(ds.longitude.min()),
+                    "lon_max": float(ds.longitude.max()),
+                    "time_start": str(ds.time.min().values),
+                    "time_end": str(ds.time.max().values),
+                    "valid_points": int(np.sum(~np.isnan(ds.ssha_karin.values))),
+                }
+            )
+        elif any(var in ds.data_vars for var in ["chlor_a", "BinList", "chlorophyll"]):
+            # Arquivo MODIS
+            try:
+                # Tentar abrir grupo L3b
+                ds_modis = xr.open_dataset(ncfile, group="level-3_binned_data")
+
+                if "BinList" in ds_modis.data_vars:
+                    binlist = ds_modis["BinList"]
+                    binlist_values = binlist.values
+
+                    if (
+                        hasattr(binlist_values, "dtype")
+                        and "bin_num" in binlist_values.dtype.names
+                    ):
+                        bin_nums = binlist_values["bin_num"]
+                        lats, lons = converter_bin_para_lat_lon(bin_nums)
+
+                        metadata.update(
+                            {
+                                "type": "MODIS",
+                                "lat_min": float(np.nanmin(lats)),
+                                "lat_max": float(np.nanmax(lats)),
+                                "lon_min": float(np.nanmin(lons)),
+                                "lon_max": float(np.nanmax(lons)),
+                                "valid_points": len(bin_nums),
+                                "date": extract_date_from_filename(ncfile),
+                            }
+                        )
+            except:
+                # Fallback para estrutura padrão
+                metadata.update({"type": "MODIS", "valid_points": 0})
+        else:
+            # Verificar se é arquivo MODIS pelo nome
+            if "MODIS" in os.path.basename(ncfile).upper():
+                metadata.update(
+                    {
+                        "type": "MODIS",
+                        "date": extract_date_from_filename(ncfile),
+                        "valid_points": 0,
+                    }
+                )
+            else:
+                metadata["type"] = "UNKNOWN"
+
+        ds.close()
+        return metadata
+
     except Exception as e:
-        print(f"ERRO ao ler MODIS L3b: {e}")
-        return None
+        print(f"ERRO ao extrair metadados de {ncfile}: {e}")
+        return {
+            "file_path": ncfile,
+            "file_name": os.path.basename(ncfile),
+            "type": "ERROR",
+            "error": str(e),
+            "created": datetime.now().isoformat(),
+        }
 
 
-def extrair_coordenadas_modis(ds_modis):
-    """Extrai coordenadas reais dos dados MODIS L3b"""
-    print("Extraindo coordenadas reais do MODIS...")
+def extract_date_from_filename(filename: str) -> str:
+    """Extrai data do nome do arquivo (SWOT ou MODIS)"""
+    try:
+        basename = os.path.basename(filename)
 
-    if "BinList" in ds_modis.data_vars:
-        binlist = ds_modis["BinList"]
-        binlist_values = binlist.values
+        # Padrão MODIS: AQUA_MODIS.20240101.L3b.DAY.AT202.nc
+        if "MODIS" in basename:
+            parts = basename.split(".")
+            if len(parts) >= 2:
+                return parts[1]  # 20240101
 
-        if hasattr(binlist_values, "dtype") and "bin_num" in binlist_values.dtype.names:
-            bin_nums = binlist_values["bin_num"]
-            lats, lons = converter_bin_para_lat_lon(bin_nums)
+        # Padrão SWOT: SWOT_L2_LR_SSH_Expert_008_497_20240101T000705_20240101T005833_PGC0_01.nc
+        elif "SWOT" in basename:
+            # Procurar padrão YYYYMMDD no nome
+            import re
 
-            print(f"   Coordenadas extraídas: {len(lats)} pontos")
-            print(f"   Range lat: {np.nanmin(lats):.3f} a {np.nanmax(lats):.3f}")
-            print(f"   Range lon: {np.nanmin(lons):.3f} a {np.nanmax(lons):.3f}")
+            match = re.search(r"(\d{8})", basename)
+            if match:
+                return match.group(1)  # 20240101
 
-            return lats, lons
-
-    print("ERRO: Não foi possível extrair coordenadas do MODIS")
-    return None, None
+        return "unknown"
+    except:
+        return "unknown"
 
 
 def converter_bin_para_lat_lon(bin_nums):
@@ -67,54 +204,199 @@ def converter_bin_para_lat_lon(bin_nums):
     return np.array(lats), np.array(lons)
 
 
-def processar_dados_modis_completos(ds_modis, lats, lons):
-    """Processa TODOS os dados MODIS com coordenadas reais"""
-    print("Processando TODOS os dados MODIS...")
+def cache_metadata(files: List[str], cachefile: str) -> List[Dict]:
+    """
+    Cache metadados de arquivos para evitar reprocessamento
 
-    dados_processados = {}
+    Args:
+        files: Lista de arquivos para processar
+        cachefile: Caminho do arquivo de cache
 
-    # Extrair nobs (número de observações)
-    if "BinList" in ds_modis.data_vars:
-        binlist_values = ds_modis["BinList"].values
-        if hasattr(binlist_values, "dtype") and "nobs" in binlist_values.dtype.names:
-            dados_processados["nobs"] = binlist_values["nobs"]
+    Returns:
+        Lista de metadados
+    """
+    # Verificar se cache existe e é recente
+    if os.path.exists(cachefile):
+        try:
+            with open(cachefile, "rb") as f:
+                cached_metadata = pickle.load(f)
 
-    # Processar clorofila-a
-    if "chlor_a" in ds_modis.data_vars:
-        chlor_values = ds_modis["chlor_a"].values
-        if hasattr(chlor_values, "dtype") and "sum" in chlor_values.dtype.names:
-            chlor_sum = chlor_values["sum"]
-            nobs = dados_processados.get("nobs", np.ones_like(chlor_sum))
-            chlor_media = np.where(nobs > 0, chlor_sum / nobs, np.nan)
+            # Verificar se todos os arquivos ainda existem
+            existing_files = [meta["file_path"] for meta in cached_metadata]
+            missing_files = [f for f in files if f not in existing_files]
 
-            # Filtrar apenas pontos com dados válidos
-            mask_validos = ~np.isnan(chlor_media) & (chlor_media > 0)
+            if not missing_files:
+                print(f"Cache encontrado: {len(cached_metadata)} arquivos")
+                return cached_metadata
+            else:
+                print(f"Cache parcial: {len(missing_files)} novos arquivos encontrados")
+        except:
+            print("Cache corrompido, recriando...")
 
-            dados_processados["chlor_a"] = chlor_media[mask_validos]
-            dados_processados["lat"] = lats[mask_validos]
-            dados_processados["lon"] = lons[mask_validos]
-            dados_processados["nobs"] = nobs[mask_validos]
+    # Processar metadados
+    print(f"Extraindo metadados de {len(files)} arquivos...")
+    metadata_list = []
 
-            print(f"   Clorofila válida: {len(dados_processados['chlor_a'])} pontos")
-            print(
-                f"   Range clorofila: {np.nanmin(dados_processados['chlor_a']):.3f} - {np.nanmax(dados_processados['chlor_a']):.3f} mg/m³"
-            )
+    for file_path in tqdm(files, desc="Extraindo metadados"):
+        metadata = extract_metadata(file_path)
+        metadata_list.append(metadata)
 
-    return dados_processados
+    # Salvar cache
+    with open(cachefile, "wb") as f:
+        pickle.dump(metadata_list, f)
+
+    print(f"Metadados salvos em cache: {cachefile}")
+    return metadata_list
 
 
-def analisar_swot_completo(ds_swot):
-    """Analisa TODOS os dados SWOT reais"""
-    print("Analisando TODOS os dados SWOT reais...")
+def build_temporal_index(metadata_list: List[Dict]) -> Dict[str, List[Dict]]:
+    """
+    Constrói índice temporal dos arquivos
 
-    if "ssha_karin" in ds_swot.data_vars:
-        ssha_data = ds_swot["ssha_karin"].values
+    Args:
+        metadata_list: Lista de metadados
+
+    Returns:
+        Dicionário com arquivos agrupados por data
+    """
+    temporal_index = {}
+
+    for metadata in metadata_list:
+        if metadata["type"] == "MODIS":
+            date = metadata.get("date", "unknown")
+            if date not in temporal_index:
+                temporal_index[date] = {"swot": [], "modis": []}
+            temporal_index[date]["modis"].append(metadata)
+        elif metadata["type"] == "SWOT":
+            # Extrair data do nome do arquivo (não do tempo interno)
+            date = extract_date_from_filename(metadata["file_path"])
+            if date != "unknown":
+                if date not in temporal_index:
+                    temporal_index[date] = {"swot": [], "modis": []}
+                temporal_index[date]["swot"].append(metadata)
+
+    print(f"Índice temporal criado: {len(temporal_index)} datas únicas")
+    return temporal_index
+
+
+def build_kdtree_for_modis_files(
+    modis_files: List[Dict],
+) -> Tuple[cKDTree, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Constrói árvore KD para arquivos MODIS de uma data específica
+
+    Args:
+        modis_files: Lista de metadados de arquivos MODIS
+
+    Returns:
+        Tuple com (kdtree, lats, lons, chlor_values)
+    """
+    all_lats = []
+    all_lons = []
+    all_chlor = []
+
+    print(f"Construindo árvore KD para {len(modis_files)} arquivos MODIS...")
+
+    for modis_meta in tqdm(modis_files, desc="Processando MODIS"):
+        try:
+            ds = xr.open_dataset(modis_meta["file_path"], group="level-3_binned_data")
+
+            if "BinList" in ds.data_vars and "chlor_a" in ds.data_vars:
+                binlist = ds["BinList"]
+                binlist_values = binlist.values
+
+                if (
+                    hasattr(binlist_values, "dtype")
+                    and "bin_num" in binlist_values.dtype.names
+                ):
+                    bin_nums = binlist_values["bin_num"]
+                    lats, lons = converter_bin_para_lat_lon(bin_nums)
+
+                    # Processar clorofila
+                    chlor_values = ds["chlor_a"].values
+                    if (
+                        hasattr(chlor_values, "dtype")
+                        and "sum" in chlor_values.dtype.names
+                    ):
+                        chlor_sum = chlor_values["sum"]
+                        nobs = binlist_values["nobs"]
+                        chlor_media = np.where(nobs > 0, chlor_sum / nobs, np.nan)
+
+                        # Filtrar pontos válidos
+                        mask_validos = ~np.isnan(chlor_media) & (chlor_media > 0)
+
+                        if np.any(mask_validos):
+                            all_lats.extend(lats[mask_validos])
+                            all_lons.extend(lons[mask_validos])
+                            all_chlor.extend(chlor_media[mask_validos])
+
+            ds.close()
+
+        except Exception as e:
+            print(f"ERRO ao processar {modis_meta['file_name']}: {e}")
+            continue
+
+    if not all_lats:
+        return None, np.array([]), np.array([]), np.array([])
+
+    # Construir árvore KD
+    coords = np.column_stack([all_lats, all_lons])
+    kdtree = cKDTree(coords)
+
+    print(f"Árvore KD criada: {len(all_lats)} pontos MODIS")
+    return kdtree, np.array(all_lats), np.array(all_lons), np.array(all_chlor)
+
+
+def process_swot_file(
+    swot_file: str,
+    modis_kdtree: cKDTree,
+    modis_lats: np.ndarray,
+    modis_lons: np.ndarray,
+    modis_chlor: np.ndarray,
+    out_csv: str,
+    tolerance_deg: float = 1.0,
+    batch_size: int = 10000,
+) -> int:
+    """
+    Processa um arquivo SWOT contra uma árvore KD MODIS
+
+    Args:
+        swot_file: Caminho do arquivo SWOT
+        modis_kdtree: Árvore KD dos pontos MODIS
+        modis_lats: Latitudes MODIS
+        modis_lons: Longitudes MODIS
+        modis_chlor: Valores de clorofila MODIS
+        out_csv: Arquivo CSV de saída
+        tolerance_deg: Tolerância em graus
+        batch_size: Tamanho do lote
+
+    Returns:
+        Número de pontos de interseção encontrados
+    """
+    if modis_kdtree is None:
+        return 0
+
+    try:
+        ds = xr.open_dataset(swot_file)
+
+        if "ssha_karin" not in ds.data_vars:
+            ds.close()
+            return 0
+
+        # Extrair dados SWOT
+        ssha_data = ds["ssha_karin"].values
         mask_validos = ~np.isnan(ssha_data)
 
-        swot_lats = ds_swot["latitude"].values[mask_validos]
-        swot_lons = ds_swot["longitude"].values[mask_validos]
+        if not np.any(mask_validos):
+            ds.close()
+            return 0
 
-        time_data = ds_swot["time"].values
+        swot_lats = ds["latitude"].values[mask_validos]
+        swot_lons = ds["longitude"].values[mask_validos]
+        swot_ssha = ssha_data[mask_validos]
+
+        # Processar tempo
+        time_data = ds["time"].values
         if len(time_data.shape) == 1:
             time_expanded = np.repeat(
                 time_data[:, np.newaxis], ssha_data.shape[1], axis=1
@@ -123,261 +405,380 @@ def analisar_swot_completo(ds_swot):
         else:
             swot_time = time_data[mask_validos]
 
-        swot_data = {
-            "ssha": ssha_data[mask_validos],
-            "lat": swot_lats,
-            "lon": swot_lons,
-            "time": swot_time,
-        }
+        ds.close()
 
-        print(f"   SSHA válido: {len(swot_data['ssha'])} pontos")
-        print(
-            f"   Range SSHA: {np.nanmin(swot_data['ssha']):.3f} - {np.nanmax(swot_data['ssha']):.3f} m"
-        )
-        print(
-            f"   Range lat: {np.nanmin(swot_data['lat']):.3f} a {np.nanmax(swot_data['lat']):.3f}"
-        )
-        print(
-            f"   Range lon: {np.nanmin(swot_data['lon']):.3f} a {np.nanmax(swot_data['lon']):.3f}"
-        )
+        # Buscar interseções espaciais
+        swot_coords = np.column_stack([swot_lats, swot_lons])
+        pontos_interseccao = []
 
-        return swot_data
+        # Processar em lotes
+        for i in range(0, len(swot_coords), batch_size):
+            end_idx = min(i + batch_size, len(swot_coords))
+            swot_batch = swot_coords[i:end_idx]
 
-    return None
-
-
-def encontrar_interseccao_ultra_eficiente(swot_data, modis_data, tolerancia=1.0):
-    """ALGORITMO ULTRA-EFICIENTE: Usa cKDTree para busca espacial"""
-    print(
-        f"Encontrando interseção espacial ULTRA-EFICIENTE (tolerância: {tolerancia}°)..."
-    )
-    print(f"   SWOT: {len(swot_data['lat'])} pontos")
-    print(f"   MODIS: {len(modis_data['lat'])} pontos")
-
-    # OTIMIZAÇÃO 1: Usar cKDTree para busca espacial O(log n)
-    print("   Construindo árvore KD para busca espacial...")
-
-    # Converter coordenadas para array numpy
-    modis_coords = np.column_stack([modis_data["lat"], modis_data["lon"]])
-    swot_coords = np.column_stack([swot_data["lat"], swot_data["lon"]])
-
-    # Construir árvore KD dos pontos MODIS
-    tree = cKDTree(modis_coords)
-
-    # OTIMIZAÇÃO 2: Busca por lotes para economizar memória
-    batch_size = 10000
-    pontos_interseccao = []
-
-    print(f"   Processando em lotes de {batch_size} pontos...")
-
-    for i in range(0, len(swot_coords), batch_size):
-        end_idx = min(i + batch_size, len(swot_coords))
-        swot_batch = swot_coords[i:end_idx]
-
-        if i % 50000 == 0:  # Progress indicator
-            print(
-                f"   Processando lote {i//batch_size + 1}/{(len(swot_coords) + batch_size - 1)//batch_size}"
+            # Buscar pontos MODIS próximos
+            distances, indices = modis_kdtree.query(
+                swot_batch, k=1, distance_upper_bound=tolerance_deg
             )
 
-        # Buscar pontos MODIS próximos para cada ponto SWOT no lote
-        distances, indices = tree.query(
-            swot_batch, k=1, distance_upper_bound=tolerancia
+            # Filtrar pontos dentro da tolerância
+            valid_mask = distances < tolerance_deg
+
+            for j, (is_valid, dist, modis_idx) in enumerate(
+                zip(valid_mask, distances, indices)
+            ):
+                if is_valid:
+                    swot_idx = i + j
+                    ponto = {
+                        "swot_file": os.path.basename(swot_file),
+                        "modis_file": "multiple",  # Pode ser de vários arquivos
+                        "lat": swot_lats[swot_idx],
+                        "lon": swot_lons[swot_idx],
+                        "ssha": swot_ssha[swot_idx],
+                        "chlor_a": modis_chlor[modis_idx],
+                        "distancia": dist,
+                        "time": swot_time[swot_idx],
+                    }
+                    pontos_interseccao.append(ponto)
+
+        # Salvar resultados incrementais
+        if pontos_interseccao:
+            df = pd.DataFrame(pontos_interseccao)
+
+            # Adicionar metadados
+            df["correlation"] = np.nan  # Será calculado depois
+            df["data_type"] = "real_intersection_scalable"
+            df["source"] = "SWOT_MODIS_NASA_SCALABLE"
+            df["date_processed"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            df["tolerance_degrees"] = tolerance_deg
+            df["algorithm"] = "cKDTree_scalable_search"
+
+            # Salvar com append
+            file_exists = os.path.exists(out_csv)
+            df.to_csv(out_csv, mode="a", header=not file_exists, index=False)
+
+        return len(pontos_interseccao)
+
+    except Exception as e:
+        print(f"ERRO ao processar SWOT {swot_file}: {e}")
+        return 0
+
+
+def process_temporal_window(
+    date: str,
+    swot_files: List[Dict],
+    modis_files: List[Dict],
+    out_csv: str,
+    tolerance_deg: float = 1.0,
+) -> int:
+    """
+    Processa uma janela temporal (um dia)
+
+    Args:
+        date: Data no formato YYYYMMDD
+        swot_files: Lista de arquivos SWOT
+        modis_files: Lista de arquivos MODIS
+        out_csv: Arquivo CSV de saída
+        tolerance_deg: Tolerância em graus
+
+    Returns:
+        Número total de pontos de interseção
+    """
+    if not swot_files or not modis_files:
+        return 0
+
+    print(f"\n=== PROCESSANDO JANELA TEMPORAL: {date} ===")
+    print(f"SWOT: {len(swot_files)} arquivos")
+    print(f"MODIS: {len(modis_files)} arquivos")
+
+    # Verificar cache da árvore KD
+    cache_file = os.path.join(CACHE_DIR, f"modis_tree_{date}.pkl")
+
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "rb") as f:
+                kdtree_data = pickle.load(f)
+            modis_kdtree, modis_lats, modis_lons, modis_chlor = kdtree_data
+            print(f"Árvore KD carregada do cache: {len(modis_lats)} pontos")
+        except:
+            print("Cache corrompido, recriando...")
+            modis_kdtree, modis_lats, modis_lons, modis_chlor = (
+                build_kdtree_for_modis_files(modis_files)
+            )
+
+            # Salvar cache
+            if modis_kdtree is not None:
+                with open(cache_file, "wb") as f:
+                    pickle.dump((modis_kdtree, modis_lats, modis_lons, modis_chlor), f)
+    else:
+        modis_kdtree, modis_lats, modis_lons, modis_chlor = (
+            build_kdtree_for_modis_files(modis_files)
         )
 
-        # Filtrar apenas pontos dentro da tolerância
-        valid_mask = distances < tolerancia
+        # Salvar cache
+        if modis_kdtree is not None:
+            with open(cache_file, "wb") as f:
+                pickle.dump((modis_kdtree, modis_lats, modis_lons, modis_chlor), f)
 
-        for j, (is_valid, dist, modis_idx) in enumerate(
-            zip(valid_mask, distances, indices)
-        ):
-            if is_valid:
-                swot_idx = i + j
-                ponto = {
-                    "swot_idx": swot_idx,
-                    "modis_idx": modis_idx,
-                    "lat": swot_data["lat"][swot_idx],
-                    "lon": swot_data["lon"][swot_idx],
-                    "ssha": swot_data["ssha"][swot_idx],
-                    "chlor_a": modis_data["chlor_a"][modis_idx],
-                    "distancia": dist,
-                    "time": swot_data["time"][swot_idx],
-                }
-                pontos_interseccao.append(ponto)
+    if modis_kdtree is None:
+        print(f"AVISO: Nenhum dado MODIS válido para {date}")
+        return 0
 
-    print(f"   Pontos de interseção encontrados: {len(pontos_interseccao)}")
+    # Processar arquivos SWOT
+    total_intersections = 0
 
-    if pontos_interseccao:
-        distancias = [p["distancia"] for p in pontos_interseccao]
-        print(f"   Distância média: {np.mean(distancias):.3f}°")
-        print(f"   Distância máxima: {np.max(distancias):.3f}°")
+    if N_JOBS == 1:
+        # Processamento sequencial
+        for swot_meta in tqdm(swot_files, desc=f"Processando SWOT {date}"):
+            intersections = process_swot_file(
+                swot_meta["file_path"],
+                modis_kdtree,
+                modis_lats,
+                modis_lons,
+                modis_chlor,
+                out_csv,
+                tolerance_deg,
+                BATCH_SIZE,
+            )
+            total_intersections += intersections
+    else:
+        # Processamento paralelo
+        def process_swot_wrapper(swot_meta):
+            return process_swot_file(
+                swot_meta["file_path"],
+                modis_kdtree,
+                modis_lats,
+                modis_lons,
+                modis_chlor,
+                out_csv,
+                tolerance_deg,
+                BATCH_SIZE,
+            )
 
-        sshas = [p["ssha"] for p in pontos_interseccao]
-        chlors = [p["chlor_a"] for p in pontos_interseccao]
-
-        print(
-            f"   Range SSHA (interseção): {np.min(sshas):.3f} - {np.max(sshas):.3f} m"
+        results = joblib.Parallel(n_jobs=N_JOBS, backend="threading")(
+            joblib.delayed(process_swot_wrapper)(swot_meta) for swot_meta in swot_files
         )
-        print(
-            f"   Range Clorofila (interseção): {np.min(chlors):.3f} - {np.max(chlors):.3f} mg/m³"
-        )
 
-    return pontos_interseccao
+        total_intersections = sum(results)
 
-
-def analisar_correlacao_completa(pontos_interseccao):
-    """Analisa correlação entre SSHA e clorofila usando TODOS os dados de interseção"""
-    if len(pontos_interseccao) < 10:
-        print("Poucos pontos para análise de correlação")
-        return None
-
-    print(
-        f"\nAnalisando correlação SSHA vs Clorofila ({len(pontos_interseccao)} pontos)..."
-    )
-
-    sshas = [p["ssha"] for p in pontos_interseccao]
-    chlors = [p["chlor_a"] for p in pontos_interseccao]
-
-    # Calcular correlação
-    corr_pearson = np.corrcoef(sshas, chlors)[0, 1]
-
-    print(f"   Correlação Pearson: {corr_pearson:.3f}")
-    print(f"   Número de pontos: {len(pontos_interseccao)}")
-
-    # Criar DataFrame para análise
-    df = pd.DataFrame(
-        {
-            "ssha": sshas,
-            "chlor_a": chlors,
-            "lat": [p["lat"] for p in pontos_interseccao],
-            "lon": [p["lon"] for p in pontos_interseccao],
-            "time": [p["time"] for p in pontos_interseccao],
-            "distancia": [p["distancia"] for p in pontos_interseccao],
-        }
-    )
-
-    return df, corr_pearson
+    print(f"Pontos de interseção encontrados: {total_intersections}")
+    return total_intersections
 
 
-def salvar_dados_completos(
-    df, corr_pearson, arquivo_saida="dados_treinamento_ultra_eficiente.csv"
-):
-    """Salva TODOS os dados preparados para treinamento"""
-    print(f"\nSalvando TODOS os dados para treinamento: {arquivo_saida}")
+def calculate_final_correlation(csv_file: str) -> float:
+    """
+    Calcula correlação final entre SSHA e clorofila
 
-    # Adicionar metadados
-    df["correlation"] = corr_pearson
-    df["data_type"] = "real_intersection_ultra_efficient"
-    df["source"] = "SWOT_MODIS_NASA_ULTRA_EFFICIENT"
-    df["date_processed"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    df["tolerance_degrees"] = 1.0  # Tolerância usada
-    df["algorithm"] = "cKDTree_spatial_search"
+    Args:
+        csv_file: Arquivo CSV com os dados
 
-    # Salvar CSV
-    df.to_csv(arquivo_saida, index=False)
-    print(f"   Dados salvos: {len(df)} pontos")
-    print(f"   Colunas: {list(df.columns)}")
+    Returns:
+        Correlação de Pearson
+    """
+    try:
+        df = pd.read_csv(csv_file)
 
-    return arquivo_saida
+        if len(df) < 10:
+            return 0.0
+
+        correlation = np.corrcoef(df["ssha"], df["chlor_a"])[0, 1]
+
+        # Atualizar correlação no CSV
+        df["correlation"] = correlation
+        df.to_csv(csv_file, index=False)
+
+        return correlation
+
+    except Exception as e:
+        print(f"ERRO ao calcular correlação: {e}")
+        return 0.0
+
+
+def generate_final_report(csv_file: str, start_time: datetime) -> None:
+    """
+    Gera relatório final da análise
+
+    Args:
+        csv_file: Arquivo CSV com os dados
+        start_time: Tempo de início da execução
+    """
+    try:
+        # Tentar ler CSV com tratamento de erro
+        try:
+            df = pd.read_csv(csv_file)
+        except pd.errors.ParserError as e:
+            print(f"ERRO ao ler CSV: {e}")
+            print("Tentando corrigir arquivo CSV...")
+
+            # Ler linha por linha e corrigir
+            with open(csv_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            # Verificar header
+            header = lines[0].strip().split(",")
+            expected_fields = len(header)
+            print(f"Campos esperados: {expected_fields}")
+
+            # Filtrar linhas com número correto de campos
+            clean_lines = []
+            for i, line in enumerate(lines):
+                fields = line.strip().split(",")
+                if len(fields) == expected_fields:
+                    clean_lines.append(line)
+                else:
+                    print(
+                        f"Removendo linha {i+1} com {len(fields)} campos (esperado: {expected_fields})"
+                    )
+
+            # Recriar CSV limpo
+            temp_file = csv_file + ".temp"
+            with open(temp_file, "w", encoding="utf-8") as f:
+                f.writelines(clean_lines)
+
+            # Substituir arquivo original
+            os.replace(temp_file, csv_file)
+
+            df = pd.read_csv(csv_file)
+
+        report_file = os.path.join(DATA_DIR, "relatorio_treinamento_ia.txt")
+
+        with open(report_file, "w", encoding="utf-8") as f:
+            f.write("RELATÓRIO DE COLETA DE DADOS SWOT x MODIS\n")
+            f.write("=" * 50 + "\n\n")
+
+            f.write(f"Data de coleta: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Tempo total: {datetime.now() - start_time}\n\n")
+
+            f.write("CONFIGURAÇÕES DE COLETA:\n")
+            f.write(f"- Tolerância espacial: {TOLERANCE_DEGREES}°\n")
+            f.write(f"- Tamanho do lote: {BATCH_SIZE:,}\n")
+            f.write(f"- Paralelização: {N_JOBS} cores\n\n")
+
+            f.write("DADOS COLETADOS:\n")
+            f.write(f"- Total de amostras: {len(df):,}\n")
+
+            # Calcular correlação se possível
+            try:
+                correlacao = df["ssha"].corr(df["chlor_a"])
+                f.write(f"- Correlação SSHA vs Clorofila: {correlacao:.6f}\n")
+            except:
+                f.write("- Correlação: Não calculável\n")
+
+            f.write(
+                f"- Range SSHA: {df['ssha'].min():.3f} a {df['ssha'].max():.3f} m\n"
+            )
+            f.write(
+                f"- Range Clorofila: {df['chlor_a'].min():.3f} a {df['chlor_a'].max():.3f} mg/m³\n"
+            )
+            f.write(f"- Distância média: {df['distancia'].mean():.3f}°\n")
+            f.write(f"- Arquivos SWOT únicos: {df['swot_file'].nunique()}\n")
+            f.write(f"- Arquivos MODIS únicos: {df['modis_file'].nunique()}\n\n")
+
+            f.write("COBERTURA GEOGRÁFICA:\n")
+            f.write(f"- Latitude: {df['lat'].min():.3f} a {df['lat'].max():.3f}°\n")
+            f.write(f"- Longitude: {df['lon'].min():.3f} a {df['lon'].max():.3f}°\n\n")
+
+            f.write("QUALIDADE DOS DADOS:\n")
+            f.write(
+                f"- SSHA válidos: {df['ssha'].notna().sum():,} ({df['ssha'].notna().mean()*100:.1f}%)\n"
+            )
+            f.write(
+                f"- Clorofila válidos: {df['chlor_a'].notna().sum():,} ({df['chlor_a'].notna().mean()*100:.1f}%)\n"
+            )
+            f.write(
+                f"- Coordenadas válidas: {df['lat'].notna().sum():,} ({df['lat'].notna().mean()*100:.1f}%)\n\n"
+            )
+
+            f.write("DADOS PRONTOS PARA:\n")
+            f.write("- Treinamento de IA\n")
+            f.write("- Análise espacial\n")
+            f.write("- Modelagem de rastreamento\n\n")
+
+            f.write("ARQUIVOS GERADOS:\n")
+            f.write(f"- Dados: {csv_file}\n")
+            f.write(f"- Relatório: {report_file}\n")
+
+        print(f"\nRelatório final salvo: {report_file}")
+
+    except Exception as e:
+        print(f"ERRO ao gerar relatório: {e}")
 
 
 def main():
-    print("ANÁLISE ULTRA-EFICIENTE - TODOS OS DADOS REAIS SWOT x MODIS")
-    print("=" * 70)
-    print("Algoritmo otimizado: cKDTree + processamento em lotes")
-    print("=" * 70)
+    """Função principal do processamento escalável"""
+    print("COLETA DE DADOS SWOT x MODIS PARA TREINAMENTO DE IA")
+    print("=" * 60)
+    print("Matching automático por data - Apenas coleta de dados")
+    print("=" * 60)
 
-    # Criar diretório de resultados
-    os.makedirs("results", exist_ok=True)
+    start_time = datetime.now()
 
-    # 1. Carregar dados SWOT
-    print("\n1. CARREGANDO TODOS OS DADOS SWOT...")
-    swot_path = (
-        "SWOT_L2_LR_SSH_Expert_008_497_20240101T000705_20240101T005833_PIC0_01.nc"
-    )
+    # === ETAPA 1: Descoberta de arquivos ===
+    print("\n1. DESCOBRINDO ARQUIVOS...")
+    swot_files = discover_files(f"{DATA_DIR}/swot", "*.nc")
+    modis_files = discover_files(f"{DATA_DIR}/modis", "*.nc")
 
-    try:
-        ds_swot = xr.open_dataset(swot_path)
-        print("SUCESSO: SWOT carregado")
-        swot_data = analisar_swot_completo(ds_swot)
-        if swot_data is None:
-            print("ERRO: Não foi possível processar dados SWOT")
-            return
-    except Exception as e:
-        print(f"ERRO ao carregar SWOT: {e}")
+    if not swot_files and not modis_files:
+        print("AVISO: Nenhum arquivo encontrado. Coloque arquivos .nc nas pastas:")
+        print(f"  - {DATA_DIR}/swot/ (arquivos SWOT)")
+        print(f"  - {DATA_DIR}/modis/ (arquivos MODIS)")
         return
 
-    # 2. Carregar dados MODIS
-    print("\n2. CARREGANDO TODOS OS DADOS MODIS...")
-    ds_modis = ler_modis_l3b("AQUA_MODIS.20240101.L3b.DAY.AT202.nc")
-    if ds_modis is not None:
-        lats, lons = extrair_coordenadas_modis(ds_modis)
-        if lats is not None and lons is not None:
-            modis_data = processar_dados_modis_completos(ds_modis, lats, lons)
-            if not modis_data:
-                print("ERRO: Não foi possível processar dados MODIS")
-                return
-        else:
-            print("ERRO: Não foi possível extrair coordenadas MODIS")
-            return
+    # === ETAPA 2: Cache de metadados ===
+    print("\n2. PROCESSANDO METADADOS...")
+    all_files = swot_files + modis_files
+
+    swot_metadata = cache_metadata(swot_files, os.path.join(CACHE_DIR, "swot_meta.pkl"))
+    modis_metadata = cache_metadata(
+        modis_files, os.path.join(CACHE_DIR, "modis_meta.pkl")
+    )
+
+    # === ETAPA 3: Índice temporal ===
+    print("\n3. CONSTRUINDO ÍNDICE TEMPORAL...")
+    all_metadata = swot_metadata + modis_metadata
+    temporal_index = build_temporal_index(all_metadata)
+
+    if not temporal_index:
+        print("ERRO: Nenhuma correspondência temporal encontrada")
+        return
+
+    # === ETAPA 4: Processamento por janela temporal ===
+    print("\n4. PROCESSANDO JANELAS TEMPORAIS...")
+
+    out_csv = os.path.join(DATA_DIR, "dados_treinamento_ia.csv")
+
+    # Limpar arquivo de saída se existir
+    if os.path.exists(out_csv):
+        os.remove(out_csv)
+
+    total_intersections = 0
+
+    for date in tqdm(sorted(temporal_index.keys()), desc="Processando datas"):
+        swot_files_date = temporal_index[date]["swot"]
+        modis_files_date = temporal_index[date]["modis"]
+
+        intersections = process_temporal_window(
+            date, swot_files_date, modis_files_date, out_csv, TOLERANCE_DEGREES
+        )
+        total_intersections += intersections
+
+    # === ETAPA 5: Análise final ===
+    print("\n5. ANÁLISE FINAL...")
+
+    if os.path.exists(out_csv):
+        correlation = calculate_final_correlation(out_csv)
+        generate_final_report(out_csv, start_time)
+
+        print(f"\nSUCESSO: COLETA DE DADOS CONCLUÍDA!")
+        print(f"   Pontos coletados: {total_intersections:,}")
+        print(f"   Correlação: {correlation:.6f}")
+        print(f"   Arquivo de dados: {out_csv}")
+        print(f"   Tempo total: {datetime.now() - start_time}")
+        print(f"\n[OK] Dados coletados e salvos para treinamento de IA")
+        print(f"[OK] Matching automático por data implementado")
+        print(f"[OK] Coleta de dados SWOT-MODIS concluída")
     else:
-        print("ERRO: Não foi possível carregar dados MODIS")
-        return
-
-    # 3. Verificar áreas de cobertura
-    print("\n3. VERIFICANDO ÁREAS DE COBERTURA...")
-    lat_overlap = min(np.max(swot_data["lat"]), np.max(modis_data["lat"])) - max(
-        np.min(swot_data["lat"]), np.min(modis_data["lat"])
-    )
-    lon_overlap = min(np.max(swot_data["lon"]), np.max(modis_data["lon"])) - max(
-        np.min(swot_data["lon"]), np.min(modis_data["lon"])
-    )
-
-    print(f"   Sobreposição: {lat_overlap*lon_overlap:.1f} graus²")
-
-    if lat_overlap <= 0 or lon_overlap <= 0:
-        print("ERRO: Nenhuma sobreposição espacial detectada")
-        return
-
-    # 4. Encontrar interseção espacial ULTRA-EFICIENTE
-    print("\n4. ENCONTRANDO INTERSEÇÃO ESPACIAL (ALGORITMO ULTRA-EFICIENTE)...")
-    pontos_interseccao = encontrar_interseccao_ultra_eficiente(
-        swot_data, modis_data, tolerancia=1.0
-    )
-
-    if not pontos_interseccao:
-        print("ERRO: Nenhuma interseção espacial encontrada")
-        return
-
-    # 5. Analisar correlação
-    print("\n5. ANALISANDO CORRELAÇÃO...")
-    resultado_corr = analisar_correlacao_completa(pontos_interseccao)
-
-    if resultado_corr:
-        df, corr_pearson = resultado_corr
-
-        # 6. Salvar dados para treinamento
-        print("\n6. SALVANDO DADOS COMPLETOS PARA TREINAMENTO...")
-        arquivo_saida = salvar_dados_completos(df, corr_pearson)
-
-        # 7. Relatório final
-        print("\n" + "=" * 70)
-        print("RELATÓRIO FINAL - ANÁLISE ULTRA-EFICIENTE")
-        print("=" * 70)
-        print(f"DADOS SWOT UTILIZADOS: {len(swot_data['ssha'])} pontos (100%)")
-        print(f"DADOS MODIS UTILIZADOS: {len(modis_data['chlor_a'])} pontos (100%)")
-        print(f"PONTOS DE INTERSEÇÃO: {len(pontos_interseccao)}")
-        print(f"CORRELAÇÃO SSHA vs CLOROFILA: {corr_pearson:.3f}")
-        print(f"ALGORITMO: cKDTree + processamento em lotes")
-        print(f"ARQUIVO GERADO: {arquivo_saida}")
-        print("=" * 70)
-
-        print(f"\nSUCESSO: ANÁLISE ULTRA-EFICIENTE CONCLUÍDA!")
-        print(f"   Arquivo de dados: {arquivo_saida}")
-        print(f"   Dados 100% reais da NASA")
-        print(f"   Algoritmo otimizado para máxima eficiência")
-        print(f"   Pronto para treinamento de neurônio!")
-    else:
-        print("ERRO: Não foi possível analisar correlação")
+        print("ERRO: Nenhum dado processado")
 
 
 if __name__ == "__main__":
