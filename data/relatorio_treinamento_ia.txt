@@ -1,0 +1,14 @@
+RELATÓRIO DE COLETA DE DADOS SWOT x MODIS
+==================================================
+
+Data de coleta: 2025-10-04 15:31:37
+Tempo total: 0:01:51.706008
+
+CONFIGURAÇÕES DE COLETA:
+- Tolerância espacial: 1.0°
+- Tamanho do lote: 10,000
+- Paralelização: -1 cores
+
+DADOS COLETADOS:
+- Total de amostras: 3,593,947
+- Correlação: Não calculável
