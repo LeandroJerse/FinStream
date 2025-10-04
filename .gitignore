@@ -1,0 +1,40 @@
+# Arquivos de dados científicos grandes (NASA)
+*.nc
+*.hdf
+*.h5
+*.hdf5
+
+# Arquivos de dados processados
+modis_processed_*.nc
+dados_treinamento_*.csv
+
+# Cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Ambientes virtuais
+venv/
+env/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Arquivos temporários
+*.tmp
+*.temp
+
+# Resultados de análise (opcional - descomente se não quiser versionar)
+# results/
