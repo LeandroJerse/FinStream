@@ -1,8 +1,12 @@
 # Arquivos de dados científicos grandes (NASA)
 *.nc
 *.hdf
-*.h5
 *.hdf5
+
+# Exceção: Permitir modelo de IA treinado
+!TAG/IA/Model/tubarao_comportamento_model.h5
+!data/IA/IA_TREINADA/tubarao_comportamento_model.h5
+!data/IA_TREINADA/tubarao_comportamento_model.h5
 
 # Arquivos de dados processados
 modis_processed_*.nc
