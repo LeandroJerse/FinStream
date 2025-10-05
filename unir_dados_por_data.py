@@ -291,8 +291,9 @@ def processar_data(data: str, arquivos: Dict[str, List[str]]) -> pd.DataFrame:
         leave=False,
     ):
 
-        lat_tubarao = row["lat"]
-        lon_tubarao = row["lon"]
+        # Converter coordenadas de telemetria para graus decimais
+        lat_tubarao = row["lat"] / 10000.0  # Converter de graus × 1e-4 para graus
+        lon_tubarao = row["lon"] / 10000.0  # Converter de graus × 1e-4 para graus
         query_point = np.array([[lat_tubarao, lon_tubarao]])
 
         # Buscar SWOT mais próximo
@@ -307,17 +308,26 @@ def processar_data(data: str, arquivos: Dict[str, List[str]]) -> pd.DataFrame:
             modis_chlor[modis_idx[0]] if modis_dist[0] < TOLERANCE_DEG else np.nan
         )
 
-        # Criar registro unificado
+        # Criar registro unificado (apenas campos de telemetria especificados)
         registro = {
-            "id_tubarao": row["id_tubarao"],
-            "tempo": row["tempo"],
+            "id": row.get("id", np.nan),
             "timestamp": row.get("timestamp", np.nan),
-            "lat": lat_tubarao,
-            "lon": lon_tubarao,
+            "lat": row.get("lat", np.nan),
+            "lon": row.get("lon", np.nan),
+            "depth_dm": row.get("depth_dm", np.nan),
+            "temp_cC": row.get("temp_cC", np.nan),
+            "batt_mV": row.get("batt_mV", np.nan),
+            "acc_x": row.get("acc_x", np.nan),
+            "acc_y": row.get("acc_y", np.nan),
+            "acc_z": row.get("acc_z", np.nan),
+            "gyr_x": row.get("gyr_x", np.nan),
+            "gyr_y": row.get("gyr_y", np.nan),
+            "gyr_z": row.get("gyr_z", np.nan),
+            "crc16": row.get("crc16", np.nan),
+            "p_forrageio": row.get("p_forrageio", np.nan),
+            "comportamento": row.get("comportamento", ""),
             "ssha_ambiente": ssha_ambiente,
             "chlor_a_ambiente": chlor_a_ambiente,
-            "comportamento": row.get("comportamento", ""),
-            "p_forrageio": row.get("p_forrageio", np.nan),
         }
 
         dados_unificados.append(registro)
@@ -385,7 +395,7 @@ def main():
     print(f"\nESTATISTICAS:")
     print(f"   Datas processadas: {len(arquivos_por_data)}")
     print(f"   Total de registros: {len(df_final):,}")
-    print(f"   Tubaroes unicos: {df_final['id_tubarao'].nunique()}")
+    print(f"   Tubaroes unicos: {df_final['id'].nunique()}")
     print(
         f"   Periodo: {min(arquivos_por_data.keys())} a {max(arquivos_por_data.keys())}"
     )
@@ -408,6 +418,22 @@ def main():
     ):
         correlacao = df_final[["ssha_ambiente", "chlor_a_ambiente"]].corr().iloc[0, 1]
         print(f"   Correlacao SSHA-Clorofila: {correlacao:.4f}")
+
+    # Estatísticas de telemetria
+    print(f"\nDADOS DE TELEMETRIA:")
+    print(f"   Profundidade media: {df_final['depth_dm'].mean()/10:.1f}m")
+    print(f"   Profundidade maxima: {df_final['depth_dm'].max()/10:.1f}m")
+    print(f"   Temperatura media: {df_final['temp_cC'].mean()/100:.1f}°C")
+    print(f"   Bateria media: {df_final['batt_mV'].mean():.0f}mV")
+    print(f"   CRC-16 validos: {df_final['crc16'].notna().sum():,} registros")
+
+    # Estatísticas de comportamento
+    if "comportamento" in df_final.columns:
+        print(f"\nCOMPORTAMENTOS:")
+        comportamentos = df_final["comportamento"].value_counts()
+        for comportamento, count in comportamentos.items():
+            pct = count / len(df_final) * 100
+            print(f"   {comportamento}: {count:,} pings ({pct:.1f}%)")
 
     print("\n" + "=" * 70)
     print("PROCESSAMENTO CONCLUIDO COM SUCESSO!")

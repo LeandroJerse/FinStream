@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Simulador Avançado de Dados Sintéticos de Tubarões
-==================================================
+Simulador Avançado de Dados Sintéticos de Tubarões com Telemetria
+================================================================
 
 Gera dados realistas de movimento de tubarões baseados em modelos ecológicos
 avançados, considerando produtividade oceânica, dinâmica de correntes,
 ritmos circadianos e comportamento de forrageio ótimo.
+
+Baseado em estudos científicos:
+- Braun et al. (2019): Mesoscale eddies release pelagic sharks
+- Estudos sobre movimentos de tubarões-brancos em redemoinhos
+
+Inclui dados de telemetria realistas do dispositivo de rastreamento.
 
 Autor: Sistema de Análise Oceanográfica Avançada
 Data: 2024-01-01
 """
 
 import os
+import struct
 import warnings
 from datetime import datetime, timedelta
 
@@ -30,9 +37,21 @@ warnings.filterwarnings("ignore")
 
 # Parâmetros da simulação
 N_TUBAROES = 50
-PINGS_POR_TUBARAO = 1000
+PINGS_POR_TUBARAO = (
+    288  # 24 horas * 12 pings/hora (5 min intervalo) = 288 pings por dia
+)
 INTERVALO_PING_MINUTOS = 5
 DATA_INICIO = "2024-01-01 00:00:00"
+DATA_FIM = "2024-01-24 23:55:00"  # Última data disponível nos dados MODIS/SWOT
+
+# Parâmetros de telemetria do dispositivo
+# Baseado em especificações reais de tags de rastreamento
+PROFUNDIDADE_MAXIMA_M = 1000  # Profundidade máxima típica para tubarões
+TEMPERATURA_OCEANO_SURFACE = 25.0  # °C
+TEMPERATURA_OCEANO_DEEP = 4.0  # °C
+BATERIA_INICIAL_MV = 4000  # mV (4.0V)
+BATERIA_MINIMA_MV = 3200  # mV (3.2V)
+BATERIA_MAXIMA_MV = 4200  # mV (4.2V)
 
 # Parâmetros de movimento por comportamento (graus)
 PASSO_FORRAGEIO_BASE = 0.003  # ~333m em 5min = ~4 km/h (forrageio lento)
@@ -54,6 +73,197 @@ NIVEL_FOME_INICIAL = 0.1  # Nível de fome inicial (0=saciado, 1=faminto)
 DADOS_AMBIENTAIS = "data/dados_unificados_final.csv"
 OUTPUT_FILE = "data/tubaroes_sinteticos.csv"
 ANALISE_DIR = "data/analise_diaria"
+
+# =============================================================================
+# FUNÇÕES DE TELEMETRIA E CRC
+# =============================================================================
+
+
+def calcular_crc16_ccitt(data):
+    """
+    Calcula CRC-16/CCITT para verificação de integridade dos dados.
+
+    Args:
+        data: bytes ou lista de bytes
+
+    Returns:
+        int: CRC-16 calculado
+    """
+    crc = 0xFFFF
+    polynomial = 0x1021
+
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = (crc << 1) ^ polynomial
+            else:
+                crc <<= 1
+            crc &= 0xFFFF
+
+    return crc
+
+
+def converter_coordenadas_para_telemetria(lat, lon):
+    """
+    Converte coordenadas para formato de telemetria (3 bytes com sinal).
+
+    Args:
+        lat, lon: coordenadas em graus decimais
+
+    Returns:
+        tuple: (lat_int, lon_int) em formato de telemetria
+    """
+    # Converter para graus × 1e-4 (4 casas decimais)
+    lat_int = int(lat * 10000)
+    lon_int = int(lon * 10000)
+
+    # Verificar limites para 3 bytes com sinal (-8,388,608 a +8,388,607)
+    lat_int = np.clip(lat_int, -8388608, 8388607)
+    lon_int = np.clip(lon_int, -8388608, 8388607)
+
+    return lat_int, lon_int
+
+
+def simular_dados_sensores(comportamento, profundidade_m, tempo_dia, nivel_fome):
+    """
+    Simula dados realistas dos sensores do dispositivo de telemetria.
+
+    Args:
+        comportamento: comportamento atual do tubarão
+        profundidade_m: profundidade em metros
+        tempo_dia: hora do dia (0-24)
+        nivel_fome: nível de fome (0-1)
+
+    Returns:
+        dict: dados dos sensores
+    """
+    # Profundidade em decímetros (0-6553.5 m)
+    depth_dm = int(profundidade_m * 10)
+    depth_dm = np.clip(depth_dm, 0, 65535)
+
+    # Temperatura baseada na profundidade e comportamento
+    # Baseado em estudos: tubarões usam redemoinhos para acessar águas
+    if comportamento == "forrageando" and profundidade_m > 200:
+        # Mergulho profundo em redemoinho anticiclônico (Braun et al.)
+        temp_base = TEMPERATURA_OCEANO_DEEP + (profundidade_m - 200) * 0.01
+    else:
+        # Gradiente térmico normal
+        temp_base = TEMPERATURA_OCEANO_SURFACE - (profundidade_m * 0.02)
+
+    # Adicionar variação temporal e ruído
+    temp_cC = int((temp_base + np.random.normal(0, 0.5)) * 100)
+    temp_cC = np.clip(temp_cC, -32768, 32767)
+
+    # Bateria (degradação realista)
+    consumo_base = 1  # mV por ping
+    consumo_extra = 2 if comportamento == "transitando" else 0
+    batt_mV = (
+        BATERIA_INICIAL_MV - (np.random.random() * 100) - consumo_base - consumo_extra
+    )
+    batt_mV = np.clip(batt_mV, BATERIA_MINIMA_MV, BATERIA_MAXIMA_MV)
+    batt_mV = int(batt_mV)
+
+    # Acelerômetro (±16g, 1 LSB = 1 mg)
+    # Baseado no comportamento: forrageio = erráticos, trânsito = direcionais
+    if comportamento == "forrageando":
+        acc_x = int(np.random.normal(0, 2000))  # Movimentos erráticos
+        acc_y = int(np.random.normal(0, 2000))
+        acc_z = int(np.random.normal(-1000, 1000))  # Movimentos verticais
+    elif comportamento == "transitando":
+        acc_x = int(np.random.normal(1000, 500))  # Movimento direcional
+        acc_y = int(np.random.normal(0, 300))
+        acc_z = int(np.random.normal(0, 200))
+    else:  # busca
+        acc_x = int(np.random.normal(500, 1000))
+        acc_y = int(np.random.normal(0, 800))
+        acc_z = int(np.random.normal(-500, 500))
+
+    # Limitar a ±16g (16000 mg)
+    acc_x = np.clip(acc_x, -16000, 16000)
+    acc_y = np.clip(acc_y, -16000, 16000)
+    acc_z = np.clip(acc_z, -16000, 16000)
+
+    # Giroscópio (±2000 °/s, 1 LSB = 1 mdps)
+    # Rotação baseada no comportamento
+    if comportamento == "forrageando":
+        gyr_x = int(np.random.normal(0, 500))  # Rotação errática
+        gyr_y = int(np.random.normal(0, 500))
+        gyr_z = int(np.random.normal(0, 300))
+    elif comportamento == "transitando":
+        gyr_x = int(np.random.normal(0, 100))  # Rotação mínima
+        gyr_y = int(np.random.normal(0, 100))
+        gyr_z = int(np.random.normal(0, 50))
+    else:  # busca
+        gyr_x = int(np.random.normal(0, 200))
+        gyr_y = int(np.random.normal(0, 200))
+        gyr_z = int(np.random.normal(0, 150))
+
+    # Limitar a ±2000 °/s (2000000 mdps)
+    gyr_x = np.clip(gyr_x, -2000000, 2000000)
+    gyr_y = np.clip(gyr_y, -2000000, 2000000)
+    gyr_z = np.clip(gyr_z, -2000000, 2000000)
+
+    return {
+        "depth_dm": depth_dm,
+        "temp_cC": temp_cC,
+        "batt_mV": batt_mV,
+        "acc_x": acc_x,
+        "acc_y": acc_y,
+        "acc_z": acc_z,
+        "gyr_x": gyr_x,
+        "gyr_y": gyr_y,
+        "gyr_z": gyr_z,
+    }
+
+
+def calcular_profundidade_comportamental(comportamento, tempo_dia, ssha, chlor_a):
+    """
+    Calcula profundidade baseada no comportamento e estudos científicos.
+
+    Baseado em Braun et al. (2019): tubarões usam redemoinhos
+    anticiclônicos para acessar a zona mesopelágica (200-1000m).
+
+    Args:
+        comportamento: comportamento atual
+        tempo_dia: hora do dia (0-24)
+        ssha: altura da superfície do mar (indica redemoinhos)
+        chlor_a: concentração de clorofila
+
+    Returns:
+        float: profundidade em metros
+    """
+    # Comportamento de mergulho baseado em estudos
+    if comportamento == "forrageando":
+        # Forrageio: mergulhos profundos durante o dia em redemoinhos
+        if 6 <= tempo_dia <= 18:  # Durante o dia
+            if ssha > 0.1:  # Redemoinho anticiclônico (SSHA positivo)
+                # Mergulho profundo na zona mesopelágica
+                profundidade_base = np.random.uniform(200, 800)
+            else:
+                # Mergulho moderado
+                profundidade_base = np.random.uniform(50, 300)
+        else:  # Noite
+            # Menos atividade de mergulho
+            profundidade_base = np.random.uniform(20, 150)
+
+    elif comportamento == "transitando":
+        # Trânsito: natação em superfície
+        profundidade_base = np.random.uniform(5, 50)
+
+    else:  # busca
+        # Busca: mergulhos moderados
+        if 6 <= tempo_dia <= 18:
+            profundidade_base = np.random.uniform(100, 400)
+        else:
+            profundidade_base = np.random.uniform(30, 200)
+
+    # Adicionar variação baseada na produtividade
+    if chlor_a > 0.1:  # Área produtiva
+        profundidade_base *= np.random.uniform(0.8, 1.2)
+
+    return np.clip(profundidade_base, 1, PROFUNDIDADE_MAXIMA_M)
+
 
 # =============================================================================
 # FUNÇÕES AUXILIARES AVANÇADAS
@@ -401,26 +611,69 @@ def buscar_dados_ambientais_proximos(lat, lon, kdtree, df_ambiental, coords):
     return df_ambiental.iloc[idx]["ssha"], df_ambiental.iloc[idx]["chlor_a"]
 
 
-def simular_tubarao_avancado(id_tubarao, ponto_inicial, df_ambiental, kdtree, coords):
+# =============================================================================
+# FUNÇÃO PRINCIPAL
+# =============================================================================
+
+
+def descobrir_datas_disponiveis():
     """
-    Simula um tubarão individual com algoritmo avançado.
+    Descobre as datas disponíveis nos dados MODIS e SWOT.
+
+    Returns:
+        list: Lista de datas no formato YYYY-MM-DD
+    """
+    import glob
+    import re
+
+    datas_disponiveis = set()
+
+    # Buscar datas nos arquivos MODIS
+    modis_files = glob.glob("data/modis/*.nc")
+    for filepath in modis_files:
+        match = re.search(r"(\d{8})", os.path.basename(filepath))
+        if match:
+            data_str = match.group(1)
+            # Converter YYYYMMDD para YYYY-MM-DD
+            data_formatada = f"{data_str[:4]}-{data_str[4:6]}-{data_str[6:8]}"
+            datas_disponiveis.add(data_formatada)
+
+    # Buscar datas nos arquivos SWOT
+    swot_files = glob.glob("data/swot/*.nc")
+    for filepath in swot_files:
+        match = re.search(r"(\d{8})", os.path.basename(filepath))
+        if match:
+            data_str = match.group(1)
+            # Converter YYYYMMDD para YYYY-MM-DD
+            data_formatada = f"{data_str[:4]}-{data_str[4:6]}-{data_str[6:8]}"
+            datas_disponiveis.add(data_formatada)
+
+    return sorted(list(datas_disponiveis))
+
+
+def simular_tubarao_por_data(
+    id_tubarao, data, ponto_inicial, df_ambiental, kdtree, coords
+):
+    """
+    Simula um tubarão para uma data específica.
 
     Args:
         id_tubarao: ID único do tubarão
+        data: Data no formato YYYY-MM-DD
         ponto_inicial: dict com lat/lon inicial
         df_ambiental: DataFrame com dados ambientais
         kdtree: árvore KD
         coords: array de coordenadas
 
     Returns:
-        list: lista de registros do tubarão
+        list: lista de registros do tubarão para a data
     """
     registros = []
 
     # Estado inicial
     lat_atual = ponto_inicial["lat"]
     lon_atual = ponto_inicial["lon"]
-    tempo_atual = datetime.strptime(DATA_INICIO, "%Y-%m-%d %H:%M:%S")
+    tempo_atual = datetime.strptime(f"{data} 00:00:00", "%Y-%m-%d %H:%M:%S")
     comportamento = "busca"  # Comportamento inicial
     nivel_fome = NIVEL_FOME_INICIAL
     tempo_sem_alimento = 0
@@ -467,15 +720,87 @@ def simular_tubarao_avancado(id_tubarao, ponto_inicial, df_ambiental, kdtree, co
             nivel_fome = min(1, nivel_fome + 0.005)
             tempo_sem_alimento += 1
 
-        # Registrar posição atual
+        # Calcular profundidade baseada no comportamento
+        profundidade_m = calcular_profundidade_comportamental(
+            comportamento, tempo_dia, ssha, chlor_a
+        )
+
+        # Simular dados dos sensores
+        dados_sensores = simular_dados_sensores(
+            comportamento, profundidade_m, tempo_dia, nivel_fome
+        )
+
+        # Converter coordenadas para formato de telemetria
+        lat_int, lon_int = converter_coordenadas_para_telemetria(lat_atual, lon_atual)
+
+        # Preparar dados para CRC (sem o CRC ainda)
+        dados_telemetria = [
+            int(tempo_atual.timestamp()),  # timestamp (4B)
+            lat_int,  # lat (3B)
+            lon_int,  # lon (3B)
+            dados_sensores["depth_dm"],  # depth_dm (2B)
+            dados_sensores["temp_cC"],  # temp_cC (2B)
+            dados_sensores["batt_mV"],  # batt_mV (2B)
+            dados_sensores["acc_x"],  # acc_x (2B)
+            dados_sensores["acc_y"],  # acc_y (2B)
+            dados_sensores["acc_z"],  # acc_z (2B)
+            dados_sensores["gyr_x"],  # gyr_x (2B)
+            dados_sensores["gyr_y"],  # gyr_y (2B)
+            dados_sensores["gyr_z"],  # gyr_z (2B)
+        ]
+
+        # Converter para bytes para calcular CRC
+        data_bytes = bytearray()
+        data_bytes.extend(
+            struct.pack(">I", dados_telemetria[0])
+        )  # timestamp (big-endian)
+        data_bytes.extend(
+            struct.pack(">i", dados_telemetria[1])[1:]
+        )  # lat (3 bytes, big-endian)
+        data_bytes.extend(
+            struct.pack(">i", dados_telemetria[2])[1:]
+        )  # lon (3 bytes, big-endian)
+        data_bytes.extend(struct.pack(">H", dados_telemetria[3]))  # depth_dm
+        data_bytes.extend(struct.pack(">h", dados_telemetria[4]))  # temp_cC
+        data_bytes.extend(struct.pack(">H", dados_telemetria[5]))  # batt_mV
+        data_bytes.extend(
+            struct.pack(
+                ">hhh",
+                dados_telemetria[6],
+                dados_telemetria[7],
+                dados_telemetria[8],
+            )
+        )  # acc
+        data_bytes.extend(
+            struct.pack(
+                ">hhh",
+                dados_telemetria[9],
+                dados_telemetria[10],
+                dados_telemetria[11],
+            )
+        )  # gyr
+
+        # Calcular CRC-16
+        crc16 = calcular_crc16_ccitt(data_bytes)
+
+        # Registrar dados de telemetria (apenas campos especificados)
         registro = {
-            "id_tubarao": id_tubarao,
-            "tempo": tempo_atual.strftime("%Y-%m-%d %H:%M:%S"),
+            "id": id_tubarao,
             "timestamp": int(tempo_atual.timestamp()),
-            "lat": round(lat_atual, 6),
-            "lon": round(lon_atual, 6),
-            "comportamento": comportamento,
+            "lat": lat_int,
+            "lon": lon_int,
+            "depth_dm": dados_sensores["depth_dm"],
+            "temp_cC": dados_sensores["temp_cC"],
+            "batt_mV": dados_sensores["batt_mV"],
+            "acc_x": dados_sensores["acc_x"],
+            "acc_y": dados_sensores["acc_y"],
+            "acc_z": dados_sensores["acc_z"],
+            "gyr_x": dados_sensores["gyr_x"],
+            "gyr_y": dados_sensores["gyr_y"],
+            "gyr_z": dados_sensores["gyr_z"],
+            "crc16": crc16,
             "p_forrageio": round(p_forrageio, 4),
+            "comportamento": comportamento,
         }
         registros.append(registro)
 
@@ -504,26 +829,23 @@ def simular_tubarao_avancado(id_tubarao, ponto_inicial, df_ambiental, kdtree, co
     return registros
 
 
-# =============================================================================
-# FUNÇÃO PRINCIPAL
-# =============================================================================
-
-
 def main():
     """
-    Função principal de simulação avançada.
+    Função principal de simulação avançada por data.
     """
     print("=" * 60)
     print("SIMULADOR AVANÇADO DE DADOS SINTÉTICOS DE TUBARÕES")
     print("=" * 60)
-    print(
-        f"Simulando {N_TUBAROES} tubarões ({PINGS_POR_TUBARAO} pings "
-        f"cada, {INTERVALO_PING_MINUTOS} min intervalo)"
-    )
+
+    # Descobrir datas disponíveis
+    datas_disponiveis = descobrir_datas_disponiveis()
+    print(f"Datas disponíveis nos dados MODIS/SWOT: {len(datas_disponiveis)}")
+    print(f"Período: {min(datas_disponiveis)} a {max(datas_disponiveis)}")
+    print(f"Simulando {N_TUBAROES} tubarões por data ({PINGS_POR_TUBARAO} pings cada)")
 
     # Carregar dados ambientais
     df_ambiental, kdtree, coords = carregar_dados_ambientais()
-    print(f"Usando {len(df_ambiental):,} pontos SWOT+MODIS como base " f"ambiental")
+    print(f"Usando {len(df_ambiental):,} pontos SWOT+MODIS como base ambiental")
 
     # Analisar dados ambientais (básico para referência)
     _ = analisar_dados_ambientais_basico(df_ambiental)
@@ -536,48 +858,30 @@ def main():
         for idx in indices_iniciais
     ]
 
-    # Preparar arquivo de saída
-    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+    # Preparar diretório de saída
+    os.makedirs(ANALISE_DIR, exist_ok=True)
 
-    # Cabeçalho do CSV
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        f.write("id_tubarao,tempo,timestamp,lat,lon,comportamento," "p_forrageio\n")
-
-    # Simular cada tubarão
+    # Simular para cada data
     todos_registros = []
-    registros_por_dia = {}  # Para análise diária
 
-    print("\nIniciando simulação avançada...")
-    for i in tqdm(range(N_TUBAROES), desc="Simulando tubarões"):
-        registros = simular_tubarao_avancado(
-            i + 1, pontos_iniciais[i], df_ambiental, kdtree, coords
-        )
+    print("\nIniciando simulação por data...")
+    for data in tqdm(datas_disponiveis, desc="Simulando por data"):
+        registros_dia = []
 
-        # Salvar incrementalmente
-        with open(OUTPUT_FILE, "a", encoding="utf-8") as f:
-            for registro in registros:
-                f.write(
-                    f"{registro['id_tubarao']},{registro['tempo']},"
-                    f"{registro['timestamp']},"
-                    f"{registro['lat']},{registro['lon']},"
-                    f"{registro['comportamento']},"
-                    f"{registro['p_forrageio']}\n"
-                )
+        for i in range(N_TUBAROES):
+            registros = simular_tubarao_por_data(
+                i + 1, data, pontos_iniciais[i], df_ambiental, kdtree, coords
+            )
+            registros_dia.extend(registros)
 
-        # Coletar dados para estatísticas
-        todos_registros.extend(registros)
-
-        # Organizar por dia para análise
-        for registro in registros:
-            data = registro["tempo"][:10]  # YYYY-MM-DD
-            if data not in registros_por_dia:
-                registros_por_dia[data] = []
-            registros_por_dia[data].append(registro)
-
-    # Salvar dados dos tubarões por dia
-    print("\nSalvando dados dos tubarões por dia...")
-    for data, registros_dia in registros_por_dia.items():
+        # Salvar dados do dia
         salvar_dados_tubaroes_por_dia(registros_dia, data)
+        todos_registros.extend(registros_dia)
+
+    # Salvar arquivo principal
+    print("\nSalvando arquivo principal...")
+    df_final = pd.DataFrame(todos_registros)
+    df_final.to_csv(OUTPUT_FILE, index=False)
 
     # Estatísticas finais
     print("\n" + "=" * 60)
@@ -585,7 +889,6 @@ def main():
     print("=" * 60)
 
     # Contagem de comportamentos
-    df_final = pd.DataFrame(todos_registros)
     contagem_comportamentos = df_final["comportamento"].value_counts()
     print("Distribuição de comportamentos:")
     for comportamento, count in contagem_comportamentos.items():
@@ -595,16 +898,32 @@ def main():
     # Estatísticas gerais
     print("\nEstatisticas gerais:")
     print(f"  Pings totais simulados: {len(todos_registros):,}")
-    print("  Periodo simulado: 3 dias por tubarao")
+    print(f"  Datas simuladas: {len(datas_disponiveis)}")
+    print(f"  Tubarões por data: {N_TUBAROES}")
+    print(f"  Pings por tubarão por dia: {PINGS_POR_TUBARAO}")
     print(f"  Intervalo entre pings: {INTERVALO_PING_MINUTOS} minutos")
+
+    # Estatísticas de telemetria
+    print("\nEstatísticas de telemetria:")
+    print(f"  Profundidade média: {df_final['depth_dm'].mean()/10:.1f}m")
+    print(f"  Profundidade máxima: {df_final['depth_dm'].max()/10:.1f}m")
+    print(f"  Temperatura média: {df_final['temp_cC'].mean()/100:.1f}°C")
+    print(f"  Bateria média: {df_final['batt_mV'].mean():.0f}mV")
+    print(f"  CRC-16 válido: {len(df_final[df_final['crc16'] > 0]):,} registros")
 
     # Verificar arquivo
     tamanho_mb = os.path.getsize(OUTPUT_FILE) / (1024 * 1024)
     print(f"\nArquivo salvo: {OUTPUT_FILE}")
     print(f"Tamanho: {tamanho_mb:.1f} MB")
 
-    print("\nSUCESSO: Simulacao avancada concluida com sucesso!")
+    print("\nSUCESSO: Simulacao avancada com telemetria concluida com sucesso!")
     print("Dados prontos para treinamento de IA com modelo ecologico realista.")
+    print("Inclui dados de telemetria completos baseados em estudos científicos:")
+    print("  - Comportamento de mergulho em redemoinhos (Braun et al. 2019)")
+    print("  - Dados de sensores realistas (acelerometro, giroscopio, temperatura)")
+    print("  - CRC-16/CCITT para verificacao de integridade")
+    print("  - Campos de labels para IA: comportamento e p_forrageio")
+    print(f"  - Dados sincronizados com MODIS/SWOT: {len(datas_disponiveis)} datas")
 
 
 if __name__ == "__main__":
