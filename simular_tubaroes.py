@@ -471,6 +471,7 @@ def simular_tubarao_avancado(id_tubarao, ponto_inicial, df_ambiental, kdtree, co
         registro = {
             "id_tubarao": id_tubarao,
             "tempo": tempo_atual.strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp": int(tempo_atual.timestamp()),
             "lat": round(lat_atual, 6),
             "lon": round(lon_atual, 6),
             "comportamento": comportamento,
@@ -540,7 +541,7 @@ def main():
 
     # Cabeçalho do CSV
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        f.write("id_tubarao,tempo,lat,lon,comportamento,p_forrageio\n")
+        f.write("id_tubarao,tempo,timestamp,lat,lon,comportamento," "p_forrageio\n")
 
     # Simular cada tubarão
     todos_registros = []
@@ -557,6 +558,7 @@ def main():
             for registro in registros:
                 f.write(
                     f"{registro['id_tubarao']},{registro['tempo']},"
+                    f"{registro['timestamp']},"
                     f"{registro['lat']},{registro['lon']},"
                     f"{registro['comportamento']},"
                     f"{registro['p_forrageio']}\n"

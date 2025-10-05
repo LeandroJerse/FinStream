@@ -311,6 +311,7 @@ def processar_data(data: str, arquivos: Dict[str, List[str]]) -> pd.DataFrame:
         registro = {
             "id_tubarao": row["id_tubarao"],
             "tempo": row["tempo"],
+            "timestamp": row.get("timestamp", np.nan),
             "lat": lat_tubarao,
             "lon": lon_tubarao,
             "ssha_ambiente": ssha_ambiente,
