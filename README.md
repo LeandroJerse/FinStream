@@ -1,6 +1,6 @@
 # 🦈 FinStream - Advanced Shark Tracking with NASA Satellite Data
 
-A comprehensive system for shark behavior prediction using real NASA satellite data (SWOT and MODIS) combined with advanced biological simulation for AI training and validation.
+A comprehensive system for shark behavior prediction using real NASA satellite data (SWOT and MODIS) combined with advanced biological simulation for AI training, validation, and real-time monitoring.
 
 ---
 
@@ -11,6 +11,7 @@ A comprehensive system for shark behavior prediction using real NASA satellite d
 - [Data Sources](#-data-sources)
 - [Installation & Setup](#-installation--setup)
 - [Complete Pipeline](#-complete-pipeline)
+- [TAG System - Real-time Monitoring](#-tag-system---real-time-monitoring)
 - [Shark Simulation Model](#-shark-simulation-model)
 - [AI Training & Validation](#-ai-training--validation)
 - [Final Dataset](#-final-dataset)
@@ -30,6 +31,7 @@ A comprehensive system for shark behavior prediction using real NASA satellite d
 3. **Advanced Biological Simulation** - Realistic shark behavior modeling
 4. **Spatial-Temporal Unification** - Integrated dataset for AI training
 5. **Machine Learning Pipeline** - Neural network training and validation
+6. **TAG System** - Real-time monitoring and API integration
 
 ### Applications
 - 🤖 Neural network training for movement prediction
@@ -37,6 +39,8 @@ A comprehensive system for shark behavior prediction using real NASA satellite d
 - 🦈 Animal behavior studies based on environmental factors
 - 📊 Marine ecology research using satellite data
 - 🔬 Scientific research on pelagic shark ecology
+- 📡 Real-time shark monitoring and tracking
+- 🌐 API-based data streaming for web applications
 
 ---
 
@@ -76,6 +80,22 @@ FinStream/
 │   └── IA_TREINADA/                  # Alternative model storage
 │       ├── tubarao_comportamento_model.h5
 │       └── scaler.pkl
+│
+├── TAG/                              # 🆕 REAL-TIME MONITORING SYSTEM
+│   ├── Data/
+│   │   ├── data_tag_fake/            # Simulated TAG data
+│   │   │   ├── simular_tubaroes_tag.py
+│   │   │   └── tubarao_tag_simulado.csv
+│   │   ├── swot_for_loop/            # SWOT data for TAG system
+│   │   └── modis_for_loop/           # MODIS data for TAG system
+│   │
+│   └── IA/
+│       ├── Model/                    # 🎯 MANUAL MODEL DEPLOYMENT
+│       │   ├── tubarao_comportamento_model.h5
+│       │   └── scaler.pkl
+│       │
+│       └── agent/
+│           └── server_IA.py          # Real-time monitoring server
 │
 └── tmp_cache/                        # KDTree cache (performance optimization)
     ├── swot_meta.pkl
@@ -117,7 +137,7 @@ FinStream/
 ### 1️⃣ Prerequisites
 
 ```bash
-pip install numpy pandas xarray scipy tqdm tensorflow scikit-learn joblib matplotlib
+pip install numpy pandas xarray scipy tqdm tensorflow scikit-learn joblib matplotlib requests
 ```
 
 ### 2️⃣ NASA Data Acquisition
@@ -133,6 +153,7 @@ pip install numpy pandas xarray scipy tqdm tensorflow scikit-learn joblib matplo
 
 ```bash
 mkdir -p data/{swot,modis,analise_diaria,IA/IA_TREINADA,IA/inferencia,IA_TREINADA}
+mkdir -p TAG/{Data/{data_tag_fake,swot_for_loop,modis_for_loop},IA/{Model,agent}}
 ```
 
 ---
@@ -181,32 +202,145 @@ python data/IA/tutuba.py
 - Foraging probability regression
 - Robust data preprocessing
 
-### **Step 4: Inference Data Preparation**
+### **Step 4: Model Deployment to TAG System**
 ```bash
-python data/inferencia/Criando_inferencia.py
+# Manual step: Copy trained models to TAG system
+cp data/IA/IA_TREINADA/tubarao_comportamento_model.h5 TAG/IA/Model/
+cp data/IA/IA_TREINADA/scaler.pkl TAG/IA/Model/
+```
+
+**Important:** After training the AI model, you must manually copy the trained files to the TAG system directory for real-time monitoring.
+
+### **Step 5: TAG Data Generation**
+```bash
+cd TAG/Data/data_tag_fake
+python simular_tubaroes_tag.py
 ```
 **Output:**
-- `data/IA/IA_TREINADA/dados_unificados_final_inferencia.csv` (inference-ready data)
-
-**Process:**
-- Removes AI labels (`p_forrageio`, `comportamento`)
-- Maintains telemetry and environmental data
-- Automatic null value handling
-
-### **Step 5: AI Inference**
-```bash
-python data/IA/inferencia.py
-```
-**Output:**
-- `data/IA/IA_TREINADA/OUTPUT/inferencia_result.json` (AI predictions)
-
-**Input:**
-- `data/IA/IA_TREINADA/dados_unificados_final_inferencia.csv` (inference data)
+- `TAG/Data/data_tag_fake/tubarao_tag_simulado.csv` (single shark, single day)
 
 **Features:**
-- Batch processing with progress tracking
-- Real-time behavior and foraging predictions
-- JSON output format for integration
+- Single shark simulation
+- Pure telemetry data (no AI labels)
+- Environmental data integration
+- Ready for real-time processing
+
+### **Step 6: Real-time Monitoring**
+```bash
+cd TAG/IA/agent
+python server_IA.py
+```
+**Features:**
+- Processes shark data every minute
+- Integrates with SWOT and MODIS data
+- AI predictions for behavior and foraging
+- Sends data to API endpoint
+- Continuous monitoring loop
+
+---
+
+## 📡 TAG System - Real-time Monitoring
+
+### Overview
+
+The TAG (Tracking and Analysis Gateway) system provides real-time shark monitoring capabilities with AI-powered behavior prediction and API integration.
+
+### Components
+
+#### 1. **Data Sources**
+- **Shark Telemetry:** `TAG/Data/data_tag_fake/tubarao_tag_simulado.csv`
+- **Environmental Data:** 
+  - SWOT: `TAG/Data/swot_for_loop/`
+  - MODIS: `TAG/Data/modis_for_loop/`
+
+#### 2. **AI Model**
+- **Location:** `TAG/IA/Model/`
+- **Files:** 
+  - `tubarao_comportamento_model.h5` (trained neural network)
+  - `scaler.pkl` (data preprocessing scaler)
+- **Deployment:** Manual copy from training results
+
+#### 3. **Real-time Server**
+- **File:** `TAG/IA/agent/server_IA.py`
+- **Function:** Continuous monitoring and API integration
+- **Interval:** 1 minute processing cycles
+
+### API Integration
+
+#### **Endpoint Configuration**
+```python
+API_URL = "https://fb457da07468.ngrok-free.app/api/RastreamentoTubaroes/v1"
+```
+
+#### **Data Format**
+```json
+{
+  "inputs": {
+    "id": 1,
+    "timestamp": 1704078000,
+    "lat": 749810,
+    "lon": 532029,
+    "depth_dm": 1517,
+    "temp_cC": 2219,
+    "batt_mV": 3946,
+    "acc_x": -194,
+    "acc_y": -140,
+    "acc_z": -380,
+    "gyr_x": 65,
+    "gyr_y": -292,
+    "gyr_z": 153,
+    "crc16": 21373,
+    "ssha_ambiente": 2.5157000000000003,
+    "chlor_a_ambiente": 0.2729067802429199
+  },
+  "outputs": {
+    "comportamento": "transitando",
+    "probabilidades_comportamento": {
+      "busca": 0.2799268066883087,
+      "forrageando": 0.290759414434433,
+      "transitando": 0.4293137490749359
+    },
+    "p_forrageio": 0.4122075140476227
+  }
+}
+```
+
+#### **Headers**
+```python
+headers = {
+    "Content-Type": "application/json",
+    "ngrok-skip-browser-warning": "true"
+}
+```
+
+### System Workflow
+
+1. **Data Loading:** Load shark telemetry and environmental data
+2. **Spatial Matching:** Find nearest SWOT and MODIS data points
+3. **AI Prediction:** Generate behavior and foraging predictions
+4. **API Transmission:** Send structured data to endpoint
+5. **Continuous Loop:** Repeat every minute
+
+### Model Deployment Process
+
+#### **After Training:**
+1. Train model using `data/IA/tutuba.py`
+2. **Manually copy** trained files:
+   ```bash
+   cp data/IA/IA_TREINADA/tubarao_comportamento_model.h5 TAG/IA/Model/
+   cp data/IA/IA_TREINADA/scaler.pkl TAG/IA/Model/
+   ```
+3. Start real-time monitoring:
+   ```bash
+   cd TAG/IA/agent
+   python server_IA.py
+   ```
+
+#### **Important Notes:**
+- Model deployment is **manual** - automated copying is not implemented
+- Always ensure the TAG system has the latest trained models
+- The system processes data sequentially from the CSV file
+- Restarts automatically when all records are processed
 
 ---
 
@@ -353,6 +487,7 @@ tensorflow>=2.8.0
 scikit-learn>=1.0.0
 joblib>=1.1.0
 matplotlib>=3.5.0
+requests>=2.25.0
 ```
 
 ### Performance Optimizations
@@ -427,6 +562,37 @@ UNIFIED DATA SAVED
 File: data/dados_unificados_final.csv
 Total records: 345,600
 Period: 2024-01-01 to 2024-01-24
+```
+
+### TAG System Output
+
+```bash
+$ python TAG/IA/agent/server_IA.py
+============================================================
+🦈 SISTEMA DE MONITORAMENTO DE TUBARÃO EM TEMPO REAL
+============================================================
+🚀 Inicializando Sistema de Monitoramento de Tubarão...
+📊 Carregando dados do tubarão...
+✅ 288 registros de tubarão carregados
+🤖 Carregando modelo de IA...
+✅ Modelo de IA carregado com sucesso!
+🌊 Carregando dados ambientais...
+📅 Carregando dados ambientais para 2024-01-01...
+✅ Dados ambientais carregados:
+   - SWOT: 1,234 pontos
+   - MODIS: 5,678 pontos
+✅ Sistema inicializado com sucesso!
+🔄 Iniciando monitoramento contínuo...
+⏱️  Intervalo: 1 minuto(s)
+🛑 Pressione Ctrl+C para parar
+
+📡 [2024-01-01 00:00:00] Registro 1/288
+   Posição: 17.7844, -136.8528
+   SSHA: -2.50
+   Chlor_a: 0.0236
+   IA: transitando (p_forrageio: 0.412)
+   API: ✅
+⏳ Aguardando 57.6s para próximo ciclo...
 ```
 
 ### Biological Validation
@@ -514,8 +680,20 @@ The following files are **NOT** versioned in Git due to size limitations:
 - `data/IA/IA_TREINADA/*.h5`
 - `data/IA/IA_TREINADA/*.pkl`
 - `data/IA/IA_TREINADA/*.csv`
+- `TAG/IA/Model/*.h5`
+- `TAG/IA/Model/*.pkl`
 
 **Reason:** GitHub limits files to 100 MB. Use [Git LFS](https://git-lfs.github.com/) for versioning if needed.
+
+### Model Deployment
+
+**Critical:** After training the AI model, you must manually copy the trained files to the TAG system:
+
+```bash
+# After training with data/IA/tutuba.py
+cp data/IA/IA_TREINADA/tubarao_comportamento_model.h5 TAG/IA/Model/
+cp data/IA/IA_TREINADA/scaler.pkl TAG/IA/Model/
+```
 
 ### Cache Management
 
@@ -550,4 +728,4 @@ Developed for shark behavior analysis using NASA satellite data.
 
 **Last Updated:** January 2025
 
-**Version:** 2.0 - Complete AI Pipeline with Telemetry Integration
+**Version:** 3.0 - Complete AI Pipeline with TAG Real-time Monitoring System
