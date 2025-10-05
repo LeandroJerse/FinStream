@@ -359,39 +359,41 @@ def carregar_dados_ambientais_por_data(data):
     print(f"Carregando dados ambientais para {data}...")
 
     # Encontrar arquivos SWOT para a data
-    data_str = data.replace('-', '')
+    data_str = data.replace("-", "")
     swot_files = []
     for root, dirs, files in os.walk("data/swot"):
         for file in files:
-            if data_str in file and file.endswith('.nc'):
+            if data_str in file and file.endswith(".nc"):
                 swot_files.append(os.path.join(root, file))
-    
+
     # Encontrar arquivos MODIS para a data
     modis_files = []
     for root, dirs, files in os.walk("data/modis"):
         for file in files:
-            if data_str in file and file.endswith('.nc'):
+            if data_str in file and file.endswith(".nc"):
                 modis_files.append(os.path.join(root, file))
-    
-    print(f"Encontrados {len(swot_files)} arquivos SWOT e {len(modis_files)} arquivos MODIS para {data}")
-    
+
+    print(
+        f"Encontrados {len(swot_files)} arquivos SWOT e {len(modis_files)} arquivos MODIS para {data}"
+    )
+
     if not swot_files or not modis_files:
         print(f"AVISO: Dados incompletos para {data}")
         return pd.DataFrame(), None, None
-    
+
     # Carregar dados SWOT
     swot_lats, swot_lons, swot_ssha = carregar_dados_swot(swot_files)
-    
+
     # Carregar dados MODIS
     modis_lats, modis_lons, modis_chlor = carregar_dados_modis(modis_files)
-    
+
     if len(swot_lats) == 0 or len(modis_lats) == 0:
         print(f"AVISO: Dados insuficientes para {data}")
         return pd.DataFrame(), None, None
-    
+
     print(f"SWOT: {len(swot_lats)} pontos válidos")
     print(f"MODIS: {len(modis_lats)} pontos válidos")
-    
+
     # Encontrar intersecção espacial entre SWOT e MODIS usando KDTree
     # Usar tolerância de 0.1 graus para considerar pontos próximos
     TOLERANCE = 0.1
@@ -399,22 +401,22 @@ def carregar_dados_ambientais_por_data(data):
     intersecao_lons = []
     intersecao_ssha = []
     intersecao_chlor = []
-    
+
     # Criar KDTree para dados MODIS (muito mais eficiente)
     print("  Construindo KDTree para busca espacial eficiente...")
     modis_coords = np.column_stack([modis_lats, modis_lons])
     modis_kdtree = cKDTree(modis_coords)
-    
+
     # Buscar pontos próximos usando KDTree
     print("  Buscando intersecções espaciais...")
     swot_coords = np.column_stack([swot_lats, swot_lons])
-    
+
     # Buscar o ponto MODIS mais próximo para cada ponto SWOT
     distances, indices = modis_kdtree.query(swot_coords, k=1)
-    
+
     # Filtrar apenas pontos dentro da tolerância
     valid_mask = distances < TOLERANCE
-    
+
     if np.any(valid_mask):
         intersecao_lats = swot_lats[valid_mask].tolist()
         intersecao_lons = swot_lons[valid_mask].tolist()
@@ -422,22 +424,28 @@ def carregar_dados_ambientais_por_data(data):
         intersecao_chlor = modis_chlor[indices[valid_mask]].tolist()
 
     print(f"Intersecção encontrada: {len(intersecao_lats)} pontos")
-    
+
     if len(intersecao_lats) == 0:
         print(f"AVISO: Nenhuma intersecção encontrada para {data}")
         return pd.DataFrame(), None, None
-    
+
     # Criar DataFrame com dados da intersecção
-    df_intersecao = pd.DataFrame({
-        'lat': intersecao_lats,
-        'lon': intersecao_lons,
-        'ssha': intersecao_ssha,
-        'chlor_a': intersecao_chlor
-    })
-    
+    df_intersecao = pd.DataFrame(
+        {
+            "lat": intersecao_lats,
+            "lon": intersecao_lons,
+            "ssha": intersecao_ssha,
+            "chlor_a": intersecao_chlor,
+        }
+    )
+
     print(f"Dados de intersecção carregados: {len(df_intersecao):,} pontos válidos")
-    print(f"SSHA range: {df_intersecao['ssha'].min():.2f} a {df_intersecao['ssha'].max():.2f}")
-    print(f"Chlor_a range: {df_intersecao['chlor_a'].min():.4f} a {df_intersecao['chlor_a'].max():.4f}")
+    print(
+        f"SSHA range: {df_intersecao['ssha'].min():.2f} a {df_intersecao['ssha'].max():.2f}"
+    )
+    print(
+        f"Chlor_a range: {df_intersecao['chlor_a'].min():.4f} a {df_intersecao['chlor_a'].max():.4f}"
+    )
 
     # Criar array de coordenadas para KDTree
     coords = np.column_stack([df_intersecao["lat"], df_intersecao["lon"]])
@@ -460,19 +468,25 @@ def carregar_dados_ambientais():
     datas_disponiveis = descobrir_datas_disponiveis()
     if not datas_disponiveis:
         raise ValueError("Nenhuma data disponível encontrada nos dados MODIS/SWOT")
-    
+
     primeira_data = datas_disponiveis[0]
     print(f"Usando dados ambientais da data: {primeira_data}")
-    
+
     # Carregar dados ambientais para a primeira data
     df_ambiental, kdtree, coords = carregar_dados_ambientais_por_data(primeira_data)
-    
+
     if len(df_ambiental) == 0:
-        raise ValueError(f"Nenhum dado ambiental válido encontrado para {primeira_data}")
-    
+        raise ValueError(
+            f"Nenhum dado ambiental válido encontrado para {primeira_data}"
+        )
+
     print(f"Dados carregados: {len(df_ambiental):,} pontos válidos")
-    print(f"SSHA range: {df_ambiental['ssha'].min():.2f} a {df_ambiental['ssha'].max():.2f}")
-    print(f"Chlor_a range: {df_ambiental['chlor_a'].min():.4f} a {df_ambiental['chlor_a'].max():.4f}")
+    print(
+        f"SSHA range: {df_ambiental['ssha'].min():.2f} a {df_ambiental['ssha'].max():.2f}"
+    )
+    print(
+        f"Chlor_a range: {df_ambiental['chlor_a'].min():.4f} a {df_ambiental['chlor_a'].max():.4f}"
+    )
 
     return df_ambiental, kdtree, coords
 

@@ -8,7 +8,6 @@ Autor: FinShark Project
 Data: 2024
 """
 
-import argparse
 import os
 from pathlib import Path
 
@@ -114,33 +113,20 @@ def remover_colunas_ia(input_file, output_file=None):
 
 def main():
     """
-    Função principal com interface de linha de comando.
+    Função principal - sempre usa dados_unificados_final.csv como entrada.
     """
-    parser = argparse.ArgumentParser(
-        description="Remove colunas p_forrageio e comportamento de dados unificados",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Exemplos de uso:
-  python Criando_inferencia.py dados_unificados_final.csv
-  python Criando_inferencia.py dados_unificados_final.csv -o dados_inferencia.csv
-  python Criando_inferencia.py ../dados_unificados_final.csv -o dados_inferencia.csv
-        """,
-    )
+    # Arquivo de entrada fixo
+    input_file = "data/dados_unificados_final.csv"
 
-    parser.add_argument(
-        "input_file", help="Arquivo CSV de entrada (formato dados_unificados_final.csv)"
-    )
-
-    parser.add_argument(
-        "-o",
-        "--output",
-        help="Arquivo CSV de saída (opcional, será gerado automaticamente se não especificado)",
-    )
-
-    args = parser.parse_args()
+    print("=" * 60)
+    print("CONVERSOR AUTOMÁTICO PARA DADOS DE INFERÊNCIA")
+    print("=" * 60)
+    print(f"Arquivo de entrada fixo: {input_file}")
+    print("Remove colunas p_forrageio e comportamento automaticamente")
+    print("=" * 60)
 
     try:
-        output_file = remover_colunas_ia(args.input_file, args.output)
+        output_file = remover_colunas_ia(input_file, None)
         print(f"\nArquivo de inferência salvo em: {output_file}")
 
     except Exception as e:

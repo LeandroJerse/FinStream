@@ -1,0 +1,31 @@
+[
+    {
+        "inputs": {
+            "id": 1,
+            "timestamp": 1704078000,
+            "lat": 749810,
+            "lon": 532029,
+            "depth_dm": 1517,
+            "temp_cC": 2219,
+            "batt_mV": 3946,
+            "acc_x": -194,
+            "acc_y": -140,
+            "acc_z": -380,
+            "gyr_x": 65,
+            "gyr_y": -292,
+            "gyr_z": 153,
+            "crc16": 21373,
+            "ssha_ambiente": 2.5157000000000003,
+            "chlor_a_ambiente": 0.2729067802429199
+        },
+        "outputs": {
+            "comportamento": "transitando",
+            "probabilidades_comportamento": {
+                "busca": 0.2799268066883087,
+                "forrageando": 0.290759414434433,
+                "transitando": 0.4293137490749359
+            },
+            "p_forrageio": 0.4122075140476227
+        }
+    }
+]
