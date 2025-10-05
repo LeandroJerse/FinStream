@@ -63,12 +63,15 @@ FinStream/
 │   ├── IA/                           # AI Training & Inference
 │   │   ├── tutuba.py                 # Neural network training
 │   │   ├── inferencia.py             # AI inference engine
-│   │   ├── IA_TREINADA/              # Trained models
-│   │   │   ├── tubarao_comportamento_model.h5
-│   │   │   ├── scaler.pkl
-│   │   │   └── dados_unificados_final_inferencia.csv
-│   │   └── inferencia/               # Inference data processing
-│   │       └── Criando_inferencia.py
+│   │   └── IA_TREINADA/              # Trained models & inference data
+│   │       ├── tubarao_comportamento_model.h5
+│   │       ├── scaler.pkl
+│   │       ├── dados_unificados_final_inferencia.csv
+│   │       └── OUTPUT/               # AI inference results
+│   │           └── inferencia_result.json
+│   │
+│   ├── inferencia/                   # Inference data processing
+│   │   └── Criando_inferencia.py
 │   │
 │   └── IA_TREINADA/                  # Alternative model storage
 │       ├── tubarao_comportamento_model.h5
@@ -183,7 +186,7 @@ python data/IA/tutuba.py
 python data/inferencia/Criando_inferencia.py
 ```
 **Output:**
-- `data/dados_unificados_final_inferencia.csv` (inference-ready data)
+- `data/IA/IA_TREINADA/dados_unificados_final_inferencia.csv` (inference-ready data)
 
 **Process:**
 - Removes AI labels (`p_forrageio`, `comportamento`)
@@ -195,7 +198,10 @@ python data/inferencia/Criando_inferencia.py
 python data/IA/inferencia.py
 ```
 **Output:**
-- `inferencia_result.json` (AI predictions)
+- `data/IA/IA_TREINADA/OUTPUT/inferencia_result.json` (AI predictions)
+
+**Input:**
+- `data/IA/IA_TREINADA/dados_unificados_final_inferencia.csv` (inference data)
 
 **Features:**
 - Batch processing with progress tracking
@@ -506,6 +512,8 @@ The following files are **NOT** versioned in Git due to size limitations:
 - `data/tubaroes_sinteticos.csv`
 - `tmp_cache/*.pkl`
 - `data/IA/IA_TREINADA/*.h5`
+- `data/IA/IA_TREINADA/*.pkl`
+- `data/IA/IA_TREINADA/*.csv`
 
 **Reason:** GitHub limits files to 100 MB. Use [Git LFS](https://git-lfs.github.com/) for versioning if needed.
 

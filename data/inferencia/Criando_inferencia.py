@@ -62,10 +62,8 @@ def remover_colunas_ia(input_file, output_file=None):
 
     # Gerar nome do arquivo de saída se não especificado
     if output_file is None:
-        input_path = Path(input_file)
-        output_file = (
-            input_path.parent / f"{input_path.stem}_inferencia{input_path.suffix}"
-        )
+        # Salvar no diretório data/IA/IA_TREINADA
+        output_file = "data/IA/IA_TREINADA/dados_unificados_final_inferencia.csv"
 
     # Criar diretório de saída se necessário
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
