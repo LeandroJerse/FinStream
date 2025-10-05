@@ -39,9 +39,14 @@ PASSO_FORRAGEIO_BASE = 0.003  # ~333m em 5min = ~4 km/h (forrageio lento)
 PASSO_BUSCA_BASE = 0.008  # ~888m em 5min = ~10.7 km/h (busca ativa)
 PASSO_TRANSITO_BASE = 0.012  # ~1.3km em 5min = ~16 km/h (transito rapido)
 
-# Parâmetros comportamentais
-PROB_CONTINUAR_COMPORTAMENTO = 0.4  # Reduzido para mais variabilidade
-PROB_MUDAR_COMPORTAMENTO = 0.6
+# Parâmetros comportamentais - AJUSTADO PARA REALISMO BIOLÓGICO
+# Baseado em estudos de telemetria: comportamentos persistem por horas
+# Cálculo: E[duração] = 1/(1-p) pings, onde p = prob. continuar
+# p=0.92 -> E=12.5 pings = 62.5 min (~1h por comportamento)
+# p=0.95 -> E=20 pings = 100 min (~1h40min por comportamento)
+# p=0.90 -> E=10 pings = 50 min (~50min por comportamento)
+PROB_CONTINUAR_COMPORTAMENTO = 0.92
+PROB_MUDAR_COMPORTAMENTO = 0.08
 HISTORICO_POSICOES = 10  # Número de posições para calcular velocidade
 NIVEL_FOME_INICIAL = 0.1  # Nível de fome inicial (0=saciado, 1=faminto)
 
@@ -238,27 +243,46 @@ def determinar_comportamento_avancado(
     Returns:
         str: novo comportamento
     """
-    # Chance de continuar no mesmo comportamento (com inércia)
+    # INÉRCIA COMPORTAMENTAL FORTE: comportamentos persistem por horas
+    # Com 92% de probabilidade, o tubarão continua no mesmo comportamento
+    # Isso resulta em bouts de ~1-2 horas antes de mudar
     if np.random.random() < PROB_CONTINUAR_COMPORTAMENTO:
         return comportamento_atual
 
-    # Mudança de comportamento baseada em múltiplos fatores
+    # MUDANÇA DE COMPORTAMENTO (rara, apenas 8% das vezes)
+    # Baseada em fatores ecológicos
 
-    # Fator tempo sem alimento
-    if tempo_sem_alimento > 150:  # Muito faminto (reduzido de 200)
-        if p_forrageio > 0.3:  # Reduzido de 0.4
+    # Fator tempo sem alimento: fome extrema força forrageio
+    if tempo_sem_alimento > 150:  # Muito faminto (~12.5 horas)
+        if p_forrageio > 0.3:
             return "forrageando"
         else:
             return "busca"
 
-    # Comportamento baseado na probabilidade de forrageio (biologicamente ajustado)
-    # Limiares para refletir: 35-45% forrageio, 30-40% busca, 20-30% trânsito
-    if p_forrageio > 0.5:  # Forrageio mais comum
-        return "forrageando"
-    elif p_forrageio < 0.35:  # Trânsito menos comum
-        return "transitando"
-    else:  # Busca intermediária (0.35-0.5)
-        return "busca"
+    # Transições realistas baseadas no comportamento atual e p_forrageio
+    # Tubarões não mudam bruscamente entre estados opostos
+    if comportamento_atual == "forrageando":
+        # Forrageio -> busca ou continua forrageio
+        if p_forrageio < 0.35:  # Condições ruins
+            return "busca"
+        else:
+            return "forrageando"  # Tende a continuar forrageando
+
+    elif comportamento_atual == "transitando":
+        # Trânsito -> busca ou forrageio (se encontrar boa área)
+        if p_forrageio > 0.55:  # Encontrou área produtiva
+            return "busca"  # Busca primeiro, depois forragear
+        else:
+            return "transitando"  # Continua em trânsito
+
+    else:  # busca
+        # Busca -> forrageio (área boa) ou trânsito (área ruim)
+        if p_forrageio > 0.55:
+            return "forrageando"
+        elif p_forrageio < 0.35:
+            return "transitando"
+        else:
+            return "busca"
 
 
 def calcular_movimento_avancado(
@@ -449,14 +473,8 @@ def simular_tubarao_avancado(id_tubarao, ponto_inicial, df_ambiental, kdtree, co
             "tempo": tempo_atual.strftime("%Y-%m-%d %H:%M:%S"),
             "lat": round(lat_atual, 6),
             "lon": round(lon_atual, 6),
-            "ssha": round(ssha, 4),
-            "chlor_a": round(chlor_a, 6),
             "comportamento": comportamento,
             "p_forrageio": round(p_forrageio, 4),
-            "velocidade": round(
-                velocidade_preferida * 111000 / INTERVALO_PING_MINUTOS, 2
-            ),  # m/min
-            "nivel_fome": round(nivel_fome, 3),
         }
         registros.append(registro)
 
@@ -522,14 +540,10 @@ def main():
 
     # Cabeçalho do CSV
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        f.write(
-            "id_tubarao,tempo,lat,lon,ssha,chlor_a,comportamento,"
-            "p_forrageio,velocidade,nivel_fome\n"
-        )
+        f.write("id_tubarao,tempo,lat,lon,comportamento,p_forrageio\n")
 
     # Simular cada tubarão
     todos_registros = []
-    correlacoes = []
     registros_por_dia = {}  # Para análise diária
 
     print("\nIniciando simulação avançada...")
@@ -544,11 +558,8 @@ def main():
                 f.write(
                     f"{registro['id_tubarao']},{registro['tempo']},"
                     f"{registro['lat']},{registro['lon']},"
-                    f"{registro['ssha']},{registro['chlor_a']},"
                     f"{registro['comportamento']},"
-                    f"{registro['p_forrageio']},"
-                    f"{registro['velocidade']},"
-                    f"{registro['nivel_fome']}\n"
+                    f"{registro['p_forrageio']}\n"
                 )
 
         # Coletar dados para estatísticas
@@ -561,13 +572,6 @@ def main():
                 registros_por_dia[data] = []
             registros_por_dia[data].append(registro)
 
-        # Calcular correlação local (últimos 100 pings)
-        if len(registros) >= 100:
-            df_local = pd.DataFrame(registros[-100:])
-            corr = df_local["ssha"].corr(df_local["chlor_a"])
-            if not np.isnan(corr):
-                correlacoes.append(corr)
-
     # Salvar dados dos tubarões por dia
     print("\nSalvando dados dos tubarões por dia...")
     for data, registros_dia in registros_por_dia.items():
@@ -578,10 +582,6 @@ def main():
     print("ESTATÍSTICAS FINAIS - MODELO AVANÇADO")
     print("=" * 60)
 
-    # Correlação média
-    corr_media = np.mean(correlacoes) if correlacoes else 0
-    print(f"Correlação média SSHA-Chlor_a: {corr_media:+.2f}")
-
     # Contagem de comportamentos
     df_final = pd.DataFrame(todos_registros)
     contagem_comportamentos = df_final["comportamento"].value_counts()
@@ -589,19 +589,6 @@ def main():
     for comportamento, count in contagem_comportamentos.items():
         pct = count / len(df_final) * 100
         print(f"  {comportamento}: {count:,} pings ({pct:.1f}%)")
-
-    # Estatísticas de velocidade
-    velocidades = df_final["velocidade"]
-    print("\nEstatisticas de velocidade:")
-    print(f"  Velocidade media: {velocidades.mean():.1f} m/min")
-    print(f"  Velocidade maxima: {velocidades.max():.1f} m/min")
-    print(f"  Velocidade minima: {velocidades.min():.1f} m/min")
-
-    # Estatísticas de nível de fome
-    fome = df_final["nivel_fome"]
-    print("\nEstatisticas de nivel de fome:")
-    print(f"  Fome media: {fome.mean():.3f}")
-    print(f"  Fome maxima: {fome.max():.3f}")
 
     # Estatísticas gerais
     print("\nEstatisticas gerais:")

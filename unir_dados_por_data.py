@@ -315,10 +315,6 @@ def processar_data(data: str, arquivos: Dict[str, List[str]]) -> pd.DataFrame:
             "lon": lon_tubarao,
             "ssha_ambiente": ssha_ambiente,
             "chlor_a_ambiente": chlor_a_ambiente,
-            "velocidade": row.get("velocidade", np.nan),
-            "nivel_fome": row.get(
-                "nivel_fome", row.get("fadiga_nutricional", np.nan)
-            ),  # Compatibilidade
             "comportamento": row.get("comportamento", ""),
             "p_forrageio": row.get("p_forrageio", np.nan),
         }
