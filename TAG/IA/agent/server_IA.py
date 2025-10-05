@@ -53,7 +53,7 @@ SCALER_PATH = (
 )
 
 # API
-API_URL = "https://fb457da07468.ngrok-free.app/api/RastreamentoTubaroes/v1"
+API_URL = "https://1f5a4e8dc2b0.ngrok-free.app/api/RastreamentoTubaroes/v1"
 
 # Configurações do sistema
 INTERVALO_MINUTOS = 1  # Intervalo entre processamentos
@@ -224,10 +224,10 @@ def carregar_modelo_ia():
         # Carregar scaler
         scaler = joblib.load(SCALER_PATH)
 
-        print("✅ Modelo de IA carregado com sucesso!")
+        print("OK: Modelo de IA carregado com sucesso!")
         return model, scaler
     except Exception as e:
-        print(f"❌ Erro ao carregar modelo de IA: {e}")
+        print(f"ERRO: Erro ao carregar modelo de IA: {e}")
         return None, None
 
 
@@ -281,7 +281,7 @@ def fazer_predicao_ia(model, scaler, dados_tubarao):
             "p_forrageio": float(forage_prob),
         }
     except Exception as e:
-        print(f"❌ Erro na predição da IA: {e}")
+        print(f"ERRO: Erro na predicao da IA: {e}")
         return None
 
 
@@ -301,13 +301,15 @@ def enviar_dados_api(dados_completos):
         )
 
         if response.status_code == 200:
-            print("✅ Dados enviados com sucesso para API!")
+            print("OK: Dados enviados com sucesso para API!")
             return True
         else:
-            print(f"❌ Erro ao enviar dados: {response.status_code} - {response.text}")
+            print(
+                f"ERRO: Erro ao enviar dados: {response.status_code} - {response.text}"
+            )
             return False
     except Exception as e:
-        print(f"❌ Erro na comunicação com API: {e}")
+        print(f"ERRO: Erro na comunicacao com API: {e}")
         return False
 
 
@@ -334,29 +336,39 @@ class SistemaMonitoramentoTubarao:
         """
         Inicializa o sistema.
         """
-        print("🚀 Inicializando Sistema de Monitoramento de Tubarão...")
+        print("Inicializando Sistema de Monitoramento de Tubarao...")
 
-        # Carregar dados do tubarão
-        print("📊 Carregando dados do tubarão...")
+        # Carregar dados dos tubarões
+        print("Carregando dados dos tubaroes...")
         try:
             self.df_tubarao = pd.read_csv(TUBARAO_CSV)
-            print(f"✅ {len(self.df_tubarao)} registros de tubarão carregados")
+            print(f"OK: {len(self.df_tubarao)} registros de tubaroes carregados")
+
+            # Mostrar estatísticas por tubarão
+            tubaroes_unicos = self.df_tubarao["id"].unique()
+            print(f"Tubaroes encontrados: {sorted(tubaroes_unicos)}")
+            for id_tubarao in sorted(tubaroes_unicos):
+                registros_tubarao = len(
+                    self.df_tubarao[self.df_tubarao["id"] == id_tubarao]
+                )
+                print(f"   - Tubarao {id_tubarao}: {registros_tubarao} registros")
+
         except Exception as e:
-            print(f"❌ Erro ao carregar dados do tubarão: {e}")
+            print(f"ERRO: Erro ao carregar dados dos tubaroes: {e}")
             return False
 
         # Carregar modelo de IA
-        print("🤖 Carregando modelo de IA...")
+        print("Carregando modelo de IA...")
         self.model, self.scaler = carregar_modelo_ia()
         if self.model is None or self.scaler is None:
             return False
 
         # Carregar dados ambientais
-        print("🌊 Carregando dados ambientais...")
+        print("Carregando dados ambientais...")
         if not self.carregar_dados_ambientais():
             return False
 
-        print("✅ Sistema inicializado com sucesso!")
+        print("OK: Sistema inicializado com sucesso!")
         return True
 
     def carregar_dados_ambientais(self):
@@ -368,109 +380,142 @@ class SistemaMonitoramentoTubarao:
             primeiro_timestamp = self.df_tubarao.iloc[0]["timestamp"]
             data = datetime.fromtimestamp(primeiro_timestamp).strftime("%Y-%m-%d")
 
-            print(f"📅 Carregando dados ambientais para {data}...")
+            print(f"Carregando dados ambientais para {data}...")
 
             swot_lats, swot_lons, swot_ssha, modis_lats, modis_lons, modis_chlor = (
                 carregar_dados_ambientais_por_data(data)
             )
 
             if swot_lats is None:
-                print("❌ Nenhum dado ambiental encontrado!")
+                print("ERRO: Nenhum dado ambiental encontrado!")
                 return False
 
             self.swot_data = (swot_lats, swot_lons, swot_ssha)
             self.modis_data = (modis_lats, modis_lons, modis_chlor)
 
-            print(f"✅ Dados ambientais carregados:")
+            print(f"OK: Dados ambientais carregados:")
             print(f"   - SWOT: {len(swot_lats):,} pontos")
             print(f"   - MODIS: {len(modis_lats):,} pontos")
 
             return True
         except Exception as e:
-            print(f"❌ Erro ao carregar dados ambientais: {e}")
+            print(f"ERRO: Erro ao carregar dados ambientais: {e}")
             return False
 
-    def processar_proximo_registro(self):
+    def processar_todos_tubaroes_simultaneamente(self):
         """
-        Processa o próximo registro do tubarão.
+        Processa todos os tubarões simultaneamente para o mesmo período de tempo.
         """
         if self.indice_atual >= len(self.df_tubarao):
-            print("📋 Todos os registros foram processados. Reiniciando...")
+            print("INFO: Todos os registros foram processados. Reiniciando...")
             self.indice_atual = 0
 
-        # Obter registro atual
-        registro = self.df_tubarao.iloc[self.indice_atual]
+        # Obter registros de todos os tubarões para o mesmo período de tempo
+        registros_tubaroes = []
+        dados_completos = []
 
-        # Converter coordenadas de telemetria para graus decimais
-        lat_tubarao = registro["lat"] / 10000.0
-        lon_tubarao = registro["lon"] / 10000.0
+        # Buscar registros de todos os tubarões no mesmo índice
+        for id_tubarao in range(1, 6):  # Tubarões 1, 2, 3, 4, 5
+            # Encontrar o registro do tubarão no índice atual
+            registros_tubarao = self.df_tubarao[self.df_tubarao["id"] == id_tubarao]
+            if len(registros_tubarao) > self.indice_atual:
+                registro = registros_tubarao.iloc[self.indice_atual]
+                registros_tubaroes.append((id_tubarao, registro))
 
-        # Buscar dados ambientais próximos
-        ssha_ambiente, chlor_a_ambiente = buscar_dados_ambientais_proximos(
-            lat_tubarao, lon_tubarao, self.swot_data, self.modis_data
-        )
+        if not registros_tubaroes:
+            print("ERRO: Nenhum registro encontrado para processar")
+            self.indice_atual += 1
+            return False
 
-        # Preparar dados de entrada
-        dados_inputs = {
-            "id": int(registro["id"]),
-            "timestamp": int(registro["timestamp"]),
-            "lat": int(registro["lat"]),
-            "lon": int(registro["lon"]),
-            "depth_dm": int(registro["depth_dm"]),
-            "temp_cC": int(registro["temp_cC"]),
-            "batt_mV": int(registro["batt_mV"]),
-            "acc_x": int(registro["acc_x"]),
-            "acc_y": int(registro["acc_y"]),
-            "acc_z": int(registro["acc_z"]),
-            "gyr_x": int(registro["gyr_x"]),
-            "gyr_y": int(registro["gyr_y"]),
-            "gyr_z": int(registro["gyr_z"]),
-            "crc16": int(registro["crc16"]),
-            "ssha_ambiente": (
-                float(ssha_ambiente) if not np.isnan(ssha_ambiente) else None
-            ),
-            "chlor_a_ambiente": (
-                float(chlor_a_ambiente) if not np.isnan(chlor_a_ambiente) else None
-            ),
-        }
+        # Processar cada tubarão
+        for id_tubarao, registro in registros_tubaroes:
+            # Converter coordenadas de telemetria para graus decimais
+            lat_tubarao = registro["lat"] / 10000.0
+            lon_tubarao = registro["lon"] / 10000.0
 
-        # Fazer predição com IA
-        predicao = fazer_predicao_ia(self.model, self.scaler, dados_inputs)
+            # Buscar dados ambientais próximos
+            ssha_ambiente, chlor_a_ambiente = buscar_dados_ambientais_proximos(
+                lat_tubarao, lon_tubarao, self.swot_data, self.modis_data
+            )
 
-        # Estruturar dados no formato correto
-        dados_completos = [
-            {
-                "inputs": dados_inputs,
-                "outputs": predicao if predicao else {},
+            # Preparar dados de entrada
+            dados_inputs = {
+                "id": int(registro["id"]),
+                "timestamp": int(registro["timestamp"]),
+                "lat": int(registro["lat"]),
+                "lon": int(registro["lon"]),
+                "depth_dm": int(registro["depth_dm"]),
+                "temp_cC": int(registro["temp_cC"]),
+                "batt_mV": int(registro["batt_mV"]),
+                "acc_x": int(registro["acc_x"]),
+                "acc_y": int(registro["acc_y"]),
+                "acc_z": int(registro["acc_z"]),
+                "gyr_x": int(registro["gyr_x"]),
+                "gyr_y": int(registro["gyr_y"]),
+                "gyr_z": int(registro["gyr_z"]),
+                "crc16": int(registro["crc16"]),
+                "ssha_ambiente": (
+                    float(ssha_ambiente) if not np.isnan(ssha_ambiente) else None
+                ),
+                "chlor_a_ambiente": (
+                    float(chlor_a_ambiente) if not np.isnan(chlor_a_ambiente) else None
+                ),
             }
-        ]
 
-        # Enviar para API
+            # Fazer predição com IA
+            predicao = fazer_predicao_ia(self.model, self.scaler, dados_inputs)
+
+            # Adicionar ao array de dados completos
+            dados_completos.append(
+                {
+                    "inputs": dados_inputs,
+                    "outputs": predicao if predicao else {},
+                }
+            )
+
+        # Enviar todos os dados de uma vez para a API
         sucesso = enviar_dados_api(dados_completos)
 
         # Log do processamento
-        timestamp_str = datetime.fromtimestamp(registro["timestamp"]).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
+        timestamp_str = datetime.fromtimestamp(
+            registros_tubaroes[0][1]["timestamp"]
+        ).strftime("%Y-%m-%d %H:%M:%S")
         print(
-            f"📡 [{timestamp_str}] Registro {self.indice_atual + 1}/{len(self.df_tubarao)}"
+            f"[{timestamp_str}] Processando {len(registros_tubaroes)} tubaroes simultaneamente"
         )
-        print(f"   Posição: {lat_tubarao:.4f}, {lon_tubarao:.4f}")
-        print(
-            f"   SSHA: {ssha_ambiente:.2f}"
-            if not np.isnan(ssha_ambiente)
-            else "   SSHA: N/A"
-        )
-        print(
-            f"   Chlor_a: {chlor_a_ambiente:.4f}"
-            if not np.isnan(chlor_a_ambiente)
-            else "   Chlor_a: N/A"
-        )
-        if predicao:
-            print(
-                f"   IA: {predicao['comportamento']} (p_forrageio: {predicao['p_forrageio']:.3f})"
+
+        for id_tubarao, registro in registros_tubaroes:
+            lat_tubarao = registro["lat"] / 10000.0
+            lon_tubarao = registro["lon"] / 10000.0
+            ssha_ambiente, chlor_a_ambiente = buscar_dados_ambientais_proximos(
+                lat_tubarao, lon_tubarao, self.swot_data, self.modis_data
             )
-        print(f"   API: {'✅' if sucesso else '❌'}")
+
+            print(f"   Tubarao {id_tubarao}: {lat_tubarao:.4f}, {lon_tubarao:.4f}")
+            print(
+                f"      SSHA: {ssha_ambiente:.2f}"
+                if not np.isnan(ssha_ambiente)
+                else "      SSHA: N/A"
+            )
+            print(
+                f"      Chlor_a: {chlor_a_ambiente:.4f}"
+                if not np.isnan(chlor_a_ambiente)
+                else "      Chlor_a: N/A"
+            )
+
+            # Buscar predição correspondente
+            predicao_correspondente = None
+            for dados in dados_completos:
+                if dados["inputs"]["id"] == id_tubarao:
+                    predicao_correspondente = dados["outputs"]
+                    break
+
+            if predicao_correspondente:
+                print(
+                    f"      IA: {predicao_correspondente['comportamento']} (p_forrageio: {predicao_correspondente['p_forrageio']:.3f})"
+                )
+
+        print(f"   API: {'OK' if sucesso else 'ERRO'}")
 
         self.indice_atual += 1
         return sucesso
@@ -479,31 +524,32 @@ class SistemaMonitoramentoTubarao:
         """
         Executa o sistema de monitoramento.
         """
-        print("🔄 Iniciando monitoramento contínuo...")
-        print(f"⏱️  Intervalo: {INTERVALO_MINUTOS} minuto(s)")
-        print("🛑 Pressione Ctrl+C para parar")
+        print("Iniciando monitoramento continuo...")
+        print(f"Intervalo: {INTERVALO_MINUTOS} minuto(s)")
+        print("Processando todos os 5 tubaroes simultaneamente")
+        print("Pressione Ctrl+C para parar")
 
         try:
             while True:
                 inicio = time.time()
 
-                # Processar próximo registro
-                self.processar_proximo_registro()
+                # Processar todos os tubarões simultaneamente
+                self.processar_todos_tubaroes_simultaneamente()
 
                 # Aguardar próximo ciclo
                 tempo_processamento = time.time() - inicio
                 tempo_espera = max(0, INTERVALO_MINUTOS * 60 - tempo_processamento)
 
                 if tempo_espera > 0:
-                    print(f"⏳ Aguardando {tempo_espera:.1f}s para próximo ciclo...\n")
+                    print(f"Aguardando {tempo_espera:.1f}s para proximo ciclo...\n")
                     time.sleep(tempo_espera)
                 else:
-                    print("⚠️  Processamento demorou mais que o intervalo!\n")
+                    print("AVISO: Processamento demorou mais que o intervalo!\n")
 
         except KeyboardInterrupt:
-            print("\n🛑 Sistema interrompido pelo usuário.")
+            print("\nSistema interrompido pelo usuario.")
         except Exception as e:
-            print(f"\n❌ Erro no sistema: {e}")
+            print(f"\nERRO no sistema: {e}")
 
 
 def main():
@@ -511,14 +557,14 @@ def main():
     Função principal.
     """
     print("=" * 60)
-    print("🦈 SISTEMA DE MONITORAMENTO DE TUBARÃO EM TEMPO REAL")
+    print("SISTEMA DE MONITORAMENTO DE MULTIPLOS TUBAROES EM TEMPO REAL")
     print("=" * 60)
 
     # Criar e inicializar sistema
     sistema = SistemaMonitoramentoTubarao()
 
     if not sistema.inicializar():
-        print("❌ Falha na inicialização do sistema!")
+        print("ERRO: Falha na inicializacao do sistema!")
         return 1
 
     # Executar sistema

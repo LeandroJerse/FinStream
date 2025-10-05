@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Simulador de Tubarão Único com Dados TAG
-========================================
+Simulador de Múltiplos Tubarões com Dados TAG
+=============================================
 
-Gera dados de telemetria para um único tubarão usando dados reais de SWOT e MODIS
+Gera dados de telemetria para múltiplos tubarões usando dados reais de SWOT e MODIS
 das pastas swot_for_loop e modis_for_loop. Simula movimento realista baseado na
 intersecção espacial dos dados ambientais.
 
@@ -38,7 +38,7 @@ warnings.filterwarnings("ignore")
 # =============================================================================
 
 # Parâmetros da simulação
-N_TUBAROES = 1  # Apenas um tubarão
+N_TUBAROES = 5  # Cinco tubarões
 PINGS_POR_TUBARAO = (
     288  # 24 horas * 12 pings/hora (5 min intervalo) = 288 pings por dia
 )
@@ -995,15 +995,15 @@ def simular_tubarao_por_data(
 
 def main():
     """
-    Função principal de simulação de um único tubarão com dados TAG.
+    Função principal de simulação de múltiplos tubarões com dados TAG.
     """
     print("=" * 60)
-    print("SIMULADOR DE TUBARÃO ÚNICO COM DADOS TAG")
+    print("SIMULADOR DE MÚLTIPLOS TUBARÕES COM DADOS TAG")
     print("=" * 60)
 
     # Usar apenas um dia (2024-01-01)
     data = "2024-01-01"
-    print(f"Simulando {N_TUBAROES} tubarão para a data: {data}")
+    print(f"Simulando {N_TUBAROES} tubarões para a data: {data}")
     print(f"Pings por tubarão: {PINGS_POR_TUBARAO}")
 
     # Carregar dados ambientais para a data específica
@@ -1017,24 +1017,35 @@ def main():
     # Analisar dados ambientais (básico para referência)
     _ = analisar_dados_ambientais_basico(df_ambiental)
 
-    # Selecionar ponto inicial aleatório
-    np.random.seed(42)  # Para reprodutibilidade
-    idx_inicial = np.random.choice(len(df_ambiental))
-    ponto_inicial = {
-        "lat": df_ambiental.iloc[idx_inicial]["lat"],
-        "lon": df_ambiental.iloc[idx_inicial]["lon"],
-    }
+    # Simular múltiplos tubarões
+    print(f"\nIniciando simulação de {N_TUBAROES} tubarões...")
+    todos_registros = []
 
-    print(
-        f"Ponto inicial do tubarão: lat={ponto_inicial['lat']:.4f}, "
-        f"lon={ponto_inicial['lon']:.4f}"
-    )
+    for id_tubarao in range(1, N_TUBAROES + 1):
+        print(f"\nSimulando tubarão {id_tubarao}/{N_TUBAROES}...")
 
-    # Simular o tubarão
-    print("\nIniciando simulação...")
-    registros = simular_tubarao_por_data(
-        1, data, ponto_inicial, df_ambiental, kdtree, coords
-    )
+        # Selecionar ponto inicial aleatório para cada tubarão
+        np.random.seed(42 + id_tubarao)  # Semente diferente para cada tubarão
+        idx_inicial = np.random.choice(len(df_ambiental))
+        ponto_inicial = {
+            "lat": df_ambiental.iloc[idx_inicial]["lat"],
+            "lon": df_ambiental.iloc[idx_inicial]["lon"],
+        }
+
+        print(
+            f"  Ponto inicial do tubarão {id_tubarao}: lat={ponto_inicial['lat']:.4f}, "
+            f"lon={ponto_inicial['lon']:.4f}"
+        )
+
+        # Simular o tubarão
+        registros_tubarao = simular_tubarao_por_data(
+            id_tubarao, data, ponto_inicial, df_ambiental, kdtree, coords
+        )
+
+        todos_registros.extend(registros_tubarao)
+        print(f"  ✅ Tubarão {id_tubarao} simulado: {len(registros_tubarao)} pings")
+
+    registros = todos_registros
 
     # Salvar arquivo principal no diretório correto
     print("\nSalvando arquivo principal...")
@@ -1050,7 +1061,7 @@ def main():
 
     # Estatísticas finais
     print("\n" + "=" * 60)
-    print("ESTATÍSTICAS FINAIS - TUBARÃO TAG SIMULADO")
+    print("ESTATÍSTICAS FINAIS - MÚLTIPLOS TUBARÕES TAG SIMULADOS")
     print("=" * 60)
 
     # Estatísticas de comportamento removidas - não são salvas nos dados
@@ -1059,9 +1070,15 @@ def main():
     print("\nEstatísticas gerais:")
     print(f"  Pings totais simulados: {len(registros):,}")
     print(f"  Data simulada: {data}")
-    print(f"  Tubarões: {N_TUBAROES}")
+    print(f"  Tubarões simulados: {N_TUBAROES}")
     print(f"  Pings por tubarão: {PINGS_POR_TUBARAO}")
     print(f"  Intervalo entre pings: {INTERVALO_PING_MINUTOS} minutos")
+
+    # Estatísticas por tubarão
+    print("\nEstatísticas por tubarão:")
+    for id_tubarao in range(1, N_TUBAROES + 1):
+        registros_tubarao = df_final[df_final["id"] == id_tubarao]
+        print(f"  Tubarão {id_tubarao}: {len(registros_tubarao)} pings")
 
     # Estatísticas de telemetria
     print("\nEstatísticas de telemetria:")
@@ -1076,7 +1093,7 @@ def main():
     print(f"\nArquivo salvo: {output_file}")
     print(f"Tamanho: {tamanho_mb:.1f} MB")
 
-    print("\nSUCESSO: Simulação de tubarão TAG concluída com sucesso!")
+    print("\nSUCESSO: Simulação de múltiplos tubarões TAG concluída com sucesso!")
     print("Dados prontos para análise com modelo ecológico realista.")
     print("Inclui dados de telemetria completos baseados em estudos científicos:")
     print("  - Comportamento de mergulho em redemoinhos (Braun et al. 2019)")
@@ -1084,6 +1101,7 @@ def main():
     print("  - CRC-16/CCITT para verificação de integridade")
     print("  - Dados de telemetria puros (sem labels de IA)")
     print(f"  - Dados sincronizados com MODIS/SWOT da data: {data}")
+    print(f"  - {N_TUBAROES} tubarões simulados com pontos iniciais únicos")
 
 
 if __name__ == "__main__":

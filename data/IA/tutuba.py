@@ -180,7 +180,7 @@ print("Iniciando treinamento...")
 history = model.fit(
     X_train,
     {"behavior": y_train_behavior, "forage": y_train_forage},
-    epochs=200,  # Reduzido de 200 para 100
+    epochs=120,  # Reduzido de 200 para 100
     batch_size=64,  # Aumentado de 32 para 64
     validation_data=(X_test, {"behavior": y_test_behavior, "forage": y_test_forage}),
     callbacks=[early_stopping, reduce_lr],
